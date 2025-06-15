@@ -113,14 +113,148 @@ async def bind(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_photo(bio, caption="请使用115客户端扫描二维码。\n二维码有效期为5分钟，过期后将自动刷新。\n如果想取消绑定，请发送 /cancel")
 
     # 保存状态到上下文
-    context.user_data['bind_data'] = {
+    bind_data = {
         'verifier': verifier,
         'challenge': challenge,
         'data': data,
-        'retry_count': 0
+        'retry_count': 0,
+        'last_check_time': time.time()
     }
+    context.user_data['bind_data'] = bind_data
+    
+    # 启动轮询任务
+    context.job_queue.run_repeating(
+        check_qr_status,
+        interval=5,
+        first=5,
+        data={
+            'user_id': user_id,
+            'bind_data': bind_data  # 直接传递绑定数据
+        }
+    )
     
     return BINDING
+
+async def check_qr_status(context: ContextTypes.DEFAULT_TYPE):
+    """定期检查二维码状态"""
+    job = context.job
+    user_id = job.data['user_id']
+    bind_data = job.data['bind_data']  # 从job数据中获取绑定数据
+    
+    if not bind_data:
+        logger.error(f"No bind data found for user {user_id}")
+        job.schedule_removal()
+        return
+    
+    # 检查二维码状态
+    try:
+        status = requests.get(QRCODE_STATUS_URL, params={
+            "uid": bind_data['data']["uid"],
+            "time": bind_data['data']["time"],
+            "sign": bind_data['data']["sign"]
+        })
+        
+        if status.status_code != 200:
+            logger.error(f"QR status check failed with status code: {status.status_code}")
+            await context.bot.send_message(chat_id=user_id, text="检查二维码状态失败，请重试。")
+            job.schedule_removal()
+            return
+            
+        status_data = status.json()
+        if not status_data or "data" not in status_data:
+            logger.error(f"Invalid QR status response: {status.text}")
+            await context.bot.send_message(chat_id=user_id, text="二维码状态检查返回无效数据，请重试。")
+            job.schedule_removal()
+            return
+            
+        qr_status = status_data["data"].get("status")
+        logger.info(f"QR status for user {user_id}: {qr_status}")
+        
+        if qr_status == 1:
+            # 等待扫描
+            return
+            
+        elif qr_status == 2:
+            # 扫码成功，获取token
+            token_resp = requests.post(DEVICE_CODE_TO_TOKEN_URL, data={
+                "uid": bind_data['data']["uid"],
+                "code_verifier": bind_data['verifier']
+            })
+            
+            if token_resp.status_code != 200:
+                logger.error(f"Token request failed with status code: {token_resp.status_code}")
+                await context.bot.send_message(chat_id=user_id, text="获取访问令牌失败，请重试。")
+                job.schedule_removal()
+                return
+                
+            token_data = token_resp.json()
+            if token_data.get("code") == 0:
+                write_token(user_id, token_data["data"])
+                await context.bot.send_message(chat_id=user_id, text="✅ 绑定成功！现在你可以发送磁力链接了。")
+                job.schedule_removal()
+                return
+            else:
+                error_msg = token_data.get("message", "未知错误")
+                logger.error(f"Token request failed: {error_msg}")
+                await context.bot.send_message(chat_id=user_id, text=f"绑定失败：{error_msg}，请重试。")
+                job.schedule_removal()
+                return
+                
+        elif qr_status == 3:
+            # 二维码过期，重新获取
+            bind_data['retry_count'] += 1
+            if bind_data['retry_count'] >= 3:
+                await context.bot.send_message(chat_id=user_id, text="❌ 二维码已过期且达到最大重试次数，请重新使用 /bind 命令。")
+                job.schedule_removal()
+                return
+                
+            # 重新获取二维码
+            resp = requests.post(AUTH_DEVICE_CODE_URL, data={
+                "client_id": CLIENT_ID,
+                "code_challenge": bind_data['challenge'],
+                "code_challenge_method": "sha256"
+            })
+            
+            if resp.status_code != 200:
+                logger.error(f"QR refresh failed with status code: {resp.status_code}")
+                await context.bot.send_message(chat_id=user_id, text="刷新二维码失败，请重试。")
+                job.schedule_removal()
+                return
+                
+            result = resp.json()
+            if result.get("code") != 0:
+                error_msg = result.get("message", "未知错误")
+                logger.error(f"QR refresh failed: {error_msg}")
+                await context.bot.send_message(chat_id=user_id, text=f"刷新二维码失败：{error_msg}，请重试。")
+                job.schedule_removal()
+                return
+                
+            bind_data['data'] = result["data"]
+            
+            # 生成新的二维码图片
+            qr = qrcode.QRCode(version=1, box_size=10, border=5)
+            qr.add_data(bind_data['data']["qrcode"])
+            qr.make(fit=True)
+            img = qr.make_image(fill_color="black", back_color="white")
+            
+            bio = io.BytesIO()
+            img.save(bio, 'PNG')
+            bio.seek(0)
+            
+            await context.bot.send_photo(
+                chat_id=user_id,
+                photo=bio,
+                caption=f"🔄 二维码已刷新，请重新扫描。\n这是第 {bind_data['retry_count'] + 1} 次尝试，还剩 {3 - bind_data['retry_count'] - 1} 次机会。\n如果想取消绑定，请发送 /cancel"
+            )
+            
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Network error while checking QR status: {str(e)}")
+        await context.bot.send_message(chat_id=user_id, text="网络错误，请检查网络连接后重试。")
+        job.schedule_removal()
+    except Exception as e:
+        logger.error(f"Unexpected error while checking QR status: {str(e)}")
+        await context.bot.send_message(chat_id=user_id, text="检查二维码状态时出现未知错误，请重试。")
+        job.schedule_removal()
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 检查是否有正在进行的绑定过程
