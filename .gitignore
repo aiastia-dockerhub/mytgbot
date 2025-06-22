@@ -6,7 +6,7 @@ __pycache__/
 token.txt
 user_tokens/*.json
 *.session
-*.txt
 docker_mpt/config.yaml
 docker_mpt/downloads/*
 docker_mpt/*.session-journal
+docker_mpt/data/account1/*

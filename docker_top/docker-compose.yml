@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  top:
+    image: aiastia/mytgbot:top
+    volumes:
+      - ./data:/app/data/
+    restart: unless-stopped    
+    environment:
+      - TZ=Asia/Shanghai
+      - API_BASE=https://1245**.cv/api
+      - HIDE_CATEGORY_IDS={2, 3}
+      - HIDE_LINK_IDS={58, 101}
+      - HIDE_LINK_KEYWORDS=["123", "124"]
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"

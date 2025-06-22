@@ -28,6 +28,9 @@ jobs:
           - context: ./docker_mpt
             file: ./docker_mpt/Dockerfile
             tag: mpt
+          - context: ./docker_top
+            file: ./docker_top/Dockerfile
+            tag: top
     steps:
       - name: Checkout
         uses: actions/checkout@v3
