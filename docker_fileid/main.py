@@ -1377,80 +1377,85 @@ async def handle_group_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
             group_data['timer'].cancel()
 
         async def process_media_group():
-            await asyncio.sleep(2)  # 等待2秒收集所有同组消息
+            try:
+                await asyncio.sleep(2)  # 等待2秒收集所有同组消息
 
-            messages = group_data['messages']
-            user_id = messages[0].effective_user.id if messages[0].forward_date is None else messages[0].effective_user.id
-            bot_username = context.bot.username
+                msgs = group_data['messages']
+                if not msgs:
+                    return
+                uid = msgs[0].effective_user.id
+                bname = context.bot.username
 
-            codes = []
-            errors = []
+                codes = []
+                errors = []
 
-            for msg in messages:
-                try:
-                    if msg.photo:
-                        photo = msg.photo[-1]
-                        code = save_file_to_db(user_id, 'photo', photo.file_id, photo.file_size or 0, photo.file_unique_id or '', bot_username)
-                    elif msg.video:
-                        code = save_file_to_db(user_id, 'video', msg.video.file_id, msg.video.file_size or 0, msg.video.file_unique_id or '', bot_username)
-                    elif msg.document:
-                        code = save_file_to_db(user_id, 'document', msg.document.file_id, msg.document.file_size or 0, msg.document.file_unique_id or '', bot_username)
-                    elif msg.audio:
-                        code = save_file_to_db(user_id, 'audio', msg.audio.file_id, msg.audio.file_size or 0, msg.audio.file_unique_id or '', bot_username)
-                    else:
-                        code = None
-
-                    if code:
-                        codes.append(code)
-                    else:
-                        errors.append("未知类型")
-                except Exception as e:
-                    errors.append(str(e))
-
-            # 回复结果
-            if codes:
-                creating_col = context.user_data.get('creating_collection')
-                if creating_col:
-                    # 添加到集合
-                    conn = get_db()
+                for msg in msgs:
                     try:
-                        current_count = context.user_data.get('collection_count', 0)
-                        for i, code in enumerate(codes):
-                            if current_count + i + 1 > MAX_COLLECTION_FILES:
-                                break
-                            conn.execute(
-                                "INSERT INTO collection_items (collection_code, file_code, sort_order) VALUES (?, ?, ?)",
-                                (creating_col, code, current_count + i + 1)
-                            )
-                        new_count = min(current_count + len(codes), MAX_COLLECTION_FILES)
-                        conn.execute(
-                            "UPDATE collections SET file_count = ?, updated_at = ? WHERE code = ?",
-                            (new_count, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), creating_col)
-                        )
-                        conn.commit()
-                        context.user_data['collection_count'] = new_count
+                        if msg.photo:
+                            photo = msg.photo[-1]
+                            code = save_file_to_db(uid, 'photo', photo.file_id, photo.file_size or 0, photo.file_unique_id or '', bname)
+                        elif msg.video:
+                            code = save_file_to_db(uid, 'video', msg.video.file_id, msg.video.file_size or 0, msg.video.file_unique_id or '', bname)
+                        elif msg.document:
+                            code = save_file_to_db(uid, 'document', msg.document.file_id, msg.document.file_size or 0, msg.document.file_unique_id or '', bname)
+                        elif msg.audio:
+                            code = save_file_to_db(uid, 'audio', msg.audio.file_id, msg.audio.file_size or 0, msg.audio.file_unique_id or '', bname)
+                        else:
+                            code = None
+
+                        if code:
+                            codes.append(code)
+                        else:
+                            errors.append("未知类型")
                     except Exception as e:
-                        logger.error("批量添加到集合失败: %s", e)
-                    finally:
-                        conn.close()
+                        errors.append(str(e))
 
-                    reply = f"✅ 媒体组已保存并添加到集合！\n\n共 {len(codes)} 个文件 ({new_count}/{MAX_COLLECTION_FILES})\n\n"
-                    reply += "\n".join(f"`{c}`" for c in codes)
-                else:
-                    reply = f"✅ 媒体组已保存！共 {len(codes)} 个文件：\n\n"
-                    reply += "\n".join(f"`{c}`" for c in codes)
+                # 回复结果
+                if codes:
+                    creating_col = context.user_data.get('creating_collection')
+                    if creating_col:
+                        conn = get_db()
+                        try:
+                            current_count = context.user_data.get('collection_count', 0)
+                            for i, code in enumerate(codes):
+                                if current_count + i + 1 > MAX_COLLECTION_FILES:
+                                    break
+                                conn.execute(
+                                    "INSERT INTO collection_items (collection_code, file_code, sort_order) VALUES (?, ?, ?)",
+                                    (creating_col, code, current_count + i + 1)
+                                )
+                            new_count = min(current_count + len(codes), MAX_COLLECTION_FILES)
+                            conn.execute(
+                                "UPDATE collections SET file_count = ?, updated_at = ? WHERE code = ?",
+                                (new_count, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), creating_col)
+                            )
+                            conn.commit()
+                            context.user_data['collection_count'] = new_count
+                        except Exception as e:
+                            logger.error("批量添加到集合失败: %s", e)
+                        finally:
+                            conn.close()
 
-                try:
-                    await messages[0].reply_text(reply, parse_mode="Markdown")
-                except Exception as e:
-                    logger.error("回复媒体组失败: %s", e)
+                        reply = f"✅ 媒体组已保存并添加到集合！\n\n共 {len(codes)} 个文件 ({new_count}/{MAX_COLLECTION_FILES})\n\n"
+                        reply += "\n".join(f"`{c}`" for c in codes)
+                    else:
+                        reply = f"✅ 媒体组已保存！共 {len(codes)} 个文件：\n\n"
+                        reply += "\n".join(f"`{c}`" for c in codes)
 
-            if errors:
-                logger.error("媒体组处理错误: %s", errors)
+                    try:
+                        await msgs[0].reply_text(reply, parse_mode="Markdown")
+                    except Exception as e:
+                        logger.error("回复媒体组失败: %s", e)
 
-            # 清理
-            if media_group_id in context.bot_data.get('pending_media_groups', {}):
-                del context.bot_data['pending_media_groups'][media_group_id]
+                if errors:
+                    logger.error("媒体组处理错误: %s", errors)
+
+            except Exception as e:
+                logger.error("process_media_group 异步任务失败: %s", e, exc_info=True)
+            finally:
+                # 清理
+                if media_group_id in context.bot_data.get('pending_media_groups', {}):
+                    del context.bot_data['pending_media_groups'][media_group_id]
 
         group_data['timer'] = asyncio.create_task(process_media_group())
     else:
@@ -1464,14 +1469,15 @@ async def handle_forwarded_media(update: Update, context: ContextTypes.DEFAULT_T
     if not message:
         return
 
-    # 转发的媒体消息直接用附件处理
+    logger.info("收到转发媒体消息: media_group_id=%s, has_photo=%s, has_video=%s, has_doc=%s",
+                message.media_group_id,
+                bool(message.photo),
+                bool(message.video),
+                bool(message.document))
+
+    # 转发的媒体消息直接用附件处理（逐个处理，更可靠）
     if message.document or message.photo or message.video or message.audio or message.voice:
-        # 如果有 media_group_id，走媒体组收集逻辑
-        if message.media_group_id:
-            # 复用 handle_group_media 的收集逻辑
-            await handle_group_media(update, context)
-        else:
-            await handle_attachment(update, context)
+        await handle_attachment(update, context)
     elif message.text:
         await handle_text(update, context)
     else:
