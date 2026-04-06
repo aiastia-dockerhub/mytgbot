@@ -1,0 +1,124 @@
+name: 清理 Actions 历史记录
+
+on:
+  # 手动触发
+  workflow_dispatch:
+    inputs:
+      days_old:
+        description: '删除多少天前的运行记录'
+        required: true
+        default: '30'
+        type: string
+      keep_min_runs:
+        description: '每个工作流最少保留的运行数'
+        required: true
+        default: '3'
+        type: string
+      dry_run:
+        description: '试运行（不实际删除）'
+        required: true
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+  # 每天自动清理（保留最近30天、每个工作流最少3条）
+  schedule:
+    - cron: '0 3 * * *'
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+
+    steps:
+      - name: 清理旧的 Workflow 运行记录
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const days_old = parseInt('${{ github.event.inputs.days_old || '30' }}');
+            const keep_min_runs = parseInt('${{ github.event.inputs.keep_min_runs || '3' }}');
+            const dry_run = '${{ github.event.inputs.dry_run || 'false' }}' === 'true';
+            const cutoff = new Date(Date.now() - days_old * 24 * 60 * 60 * 1000);
+
+            console.log(`📅 删除 ${days_old} 天前的运行记录 (${cutoff.toISOString().split('T')[0]})`);
+            console.log(`📦 每个工作流最少保留 ${keep_min_runs} 条`);
+            console.log(`🔍 试运行模式: ${dry_run}`);
+
+            // 获取所有工作流
+            const workflows = await github.rest.actions.listRepoWorkflows({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100
+            });
+
+            let totalDeleted = 0;
+            let totalKept = 0;
+
+            for (const wf of workflows.data.workflows) {
+              if (wf.name === '清理 Actions 历史记录') {
+                console.log(`⏭️ 跳过自身: ${wf.name}`);
+                continue;
+              }
+
+              // 获取该工作流的所有运行记录
+              const runs = await github.rest.actions.listWorkflowRuns({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: wf.id,
+                per_page: 100,
+                status: 'completed'
+              });
+
+              if (runs.data.total_count === 0) {
+                console.log(`📭 ${wf.name}: 无运行记录`);
+                continue;
+              }
+
+              // 按时间排序（新的在前）
+              const sorted = runs.data.workflow_runs.sort((a, b) => 
+                new Date(b.created_at) - new Date(a.created_at)
+              );
+
+              let deleted = 0;
+              for (let i = 0; i < sorted.length; i++) {
+                // 保留前 N 条
+                if (i < keep_min_runs) {
+                  totalKept++;
+                  continue;
+                }
+
+                const run = sorted[i];
+                const runDate = new Date(run.created_at);
+
+                if (runDate < cutoff) {
+                  if (dry_run) {
+                    console.log(`  [试运行] 将删除: ${run.name} #${run.run_number} (${run.created_at})`);
+                  } else {
+                    try {
+                      await github.rest.actions.deleteWorkflowRun({
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        run_id: run.id
+                      });
+                    } catch (err) {
+                      console.log(`  ❌ 删除失败: ${run.name} #${run.run_number}: ${err.message}`);
+                      continue;
+                    }
+                  }
+                  deleted++;
+                  totalDeleted++;
+                }
+              }
+
+              if (deleted > 0) {
+                console.log(`🗑️ ${wf.name}: ${dry_run ? '将删除' : '已删除'} ${deleted} 条`);
+              }
+            }
+
+            console.log(`\n========== 清理结果 ==========`);
+            console.log(`🗑️ ${dry_run ? '将删除' : '已删除'}: ${totalDeleted} 条`);
+            console.log(`📁 保留: ${totalKept} 条`);
+            console.log(`==============================`);
