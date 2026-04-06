@@ -13,6 +13,8 @@ from senders import send_file_group
 
 logger = logging.getLogger(__name__)
 
+PER_PAGE = 5  # 每页文件数
+
 
 def _resolve_key(context, sk: str) -> str:
     """从短 key 映射回集合代码"""
@@ -38,7 +40,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     query = update.callback_query
     data = query.data
 
-    # === 修正 chat_id 获取：优先使用 message.chat_id，兼容群组和私聊 ===
+    # === 修正 chat_id 获取 ===
     if query.message:
         chat_id = query.message.chat_id
         chat_type = query.message.chat.type if query.message.chat else "unknown"
@@ -69,24 +71,53 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     try:
-        # 短格式: s|key, a|key, p|key|page
-        if data.startswith("s|") or data.startswith("a|") or data.startswith("p|"):
-            action = data[0]
-            rest = data[2:]
+        # 短格式回调处理（sn| 必须在 s| 之前检查）
+        if data.startswith("sn|") or data.startswith("s|") or data.startswith("a|") or data.startswith("p|"):
+            # 解析 action 和 rest
+            if data.startswith("sn|"):
+                action = 'sn'
+                rest = data[3:]
+            else:
+                action = data[0]
+                rest = data[2:]
             logger.info("短格式回调: action=%s, rest=%s", action, rest)
 
-            if action == 's':
-                # 全部发送: s|key
-                sk = rest
-                logger.info("处理全部发送: sk=%s", sk)
+            if action == 'sn':
+                # 下一页发送: sn|key|page
+                parts = rest.split("|")
+                logger.info("处理下一页发送: parts=%s", parts)
+                if len(parts) < 2:
+                    logger.error("下一页发送数据格式错误: rest=%s", rest)
+                    await context.bot.send_message(chat_id=chat_id, text="⚠️ 数据格式错误。")
+                    return
+                sk = parts[0]
+                try:
+                    page = int(parts[1])
+                except ValueError:
+                    logger.error("下一页页码不是数字: parts[1]=%s", parts[1])
+                    await context.bot.send_message(chat_id=chat_id, text="⚠️ 页码格式错误。")
+                    return
                 col_code = _resolve_key(context, sk)
                 if not col_code:
-                    logger.warning("全部发送失败: sk=%s 无法解析, cb_map=%s", sk, list(context.bot_data.get('cb_map', {}).keys()))
+                    logger.warning("下一页发送失败: sk=%s 无法解析", sk)
                     await context.bot.send_message(chat_id=chat_id, text="⚠️ 按钮已过期，请重新发送集合代码。")
                     return
-                logger.info("开始全部发送: col_code=%s, chat_id=%s", col_code, chat_id)
-                await _send_all(context, chat_id, col_code, query)
-                logger.info("全部发送完成: col_code=%s", col_code)
+                logger.info("开始下一页发送: col_code=%s, page=%d", col_code, page)
+                await _send_paginated(context, chat_id, col_code, sk, page=page, query=query)
+                logger.info("下一页发送完成: col_code=%s, page=%d", col_code, page)
+
+            elif action == 's':
+                # 分页发送: s|key (从第1页开始)
+                sk = rest
+                logger.info("处理分页发送: sk=%s", sk)
+                col_code = _resolve_key(context, sk)
+                if not col_code:
+                    logger.warning("分页发送失败: sk=%s 无法解析, cb_map=%s", sk, list(context.bot_data.get('cb_map', {}).keys()))
+                    await context.bot.send_message(chat_id=chat_id, text="⚠️ 按钮已过期，请重新发送集合代码。")
+                    return
+                logger.info("开始分页发送: col_code=%s, chat_id=%s", col_code, chat_id)
+                await _send_paginated(context, chat_id, col_code, sk, page=1, query=query)
+                logger.info("分页发送第1页完成: col_code=%s", col_code)
 
             elif action == 'a':
                 # 自动发送: a|key
@@ -102,9 +133,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 logger.info("自动发送完成: col_code=%s", col_code)
 
             elif action == 'p':
-                # 分页: p|key|page
+                # 分页浏览: p|key|page
                 parts = rest.split("|")
-                logger.info("处理分页: parts=%s", parts)
+                logger.info("处理分页浏览: parts=%s", parts)
                 if len(parts) < 2:
                     logger.error("分页数据格式错误: rest=%s, parts=%s", rest, parts)
                     await context.bot.send_message(chat_id=chat_id, text="⚠️ 数据格式错误。")
@@ -121,11 +152,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     logger.warning("分页失败: sk=%s 无法解析", sk)
                     await context.bot.send_message(chat_id=chat_id, text="⚠️ 按钮已过期，请重新发送集合代码。")
                     return
-                logger.info("开始分页: col_code=%s, page=%d", col_code, page)
+                logger.info("开始分页浏览: col_code=%s, page=%d", col_code, page)
                 await _send_page(context, chat_id, col_code, page, query)
-                logger.info("分页完成: col_code=%s, page=%d", col_code, page)
+                logger.info("分页浏览完成: col_code=%s, page=%d", col_code, page)
 
-        # 旧格式兼容: col_send|code, col_auto|code, col_page|code|page, page_send|code|page
+        # 旧格式兼容
         elif data.startswith("col_send|"):
             col_code = data.split("|", 1)[1]
             logger.info("旧格式全部发送: col_code=%s", col_code)
@@ -176,8 +207,112 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     logger.info("========== 按钮回调结束 ==========")
 
 
+async def _send_paginated(context, chat_id, col_code, sk, page=1, query=None):
+    """分页发送集合文件：每次发送 PER_PAGE 个，带页码按钮，已发送页显示✅"""
+    logger.info("_send_paginated: col_code=%s, sk=%s, page=%d", col_code, sk, page)
+
+    files = get_collection_files(col_code)
+    col_info = get_collection(col_code)
+
+    if not files or not col_info:
+        msg = "⚠️ 集合为空或不存在。"
+        if query:
+            try:
+                await query.edit_message_text(msg)
+            except Exception:
+                await context.bot.send_message(chat_id=chat_id, text=msg)
+        return
+
+    total = len(files)
+    total_pages = (total + PER_PAGE - 1) // PER_PAGE
+    page = max(1, min(page, total_pages))
+    start = (page - 1) * PER_PAGE
+    page_files = files[start:start + PER_PAGE]
+
+    # 记录已发送的页面
+    sent_key = f"sent_pages_{sk}"
+    sent_pages = context.user_data.get(sent_key, set())
+    sent_pages.add(page)
+    context.user_data[sent_key] = sent_pages
+
+    # 发送本页文件
+    logger.info("_send_paginated: 发送第 %d 页, %d 个文件", page, len(page_files))
+    try:
+        sent = await send_file_group(context, chat_id, page_files)
+        logger.info("_send_paginated: 第 %d 页发送完成, sent=%d", page, sent)
+    except Exception as e:
+        logger.error("_send_paginated: 第 %d 页发送失败: %s", page, e, exc_info=True)
+        sent = 0
+
+    # 构建状态消息
+    safe_name = escape_markdown(col_info['name'])
+    text = f"📦 *{safe_name}*\n"
+    text += f"✅ 第 {page}/{total_pages} 页已发送 ({sent}/{len(page_files)})\n"
+    text += f"📊 进度: {len(sent_pages)}/{total_pages} 页"
+
+    # 全部发送完毕
+    if len(sent_pages) >= total_pages:
+        text += "\n\n🎉 所有文件已发送完毕！"
+
+    # 导航行：上一页 / 页码 / 下一页
+    buttons = []
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton("⬅️", callback_data=f"sn|{sk}|{page - 1}"))
+    nav.append(InlineKeyboardButton(f"{page}/{total_pages}", callback_data="noop"))
+    if page < total_pages:
+        nav.append(InlineKeyboardButton("➡️", callback_data=f"sn|{sk}|{page + 1}"))
+    buttons.append(nav)
+
+    # 页码按钮行：最多显示当前页前后5页，每行5个按钮
+    page_range_start = max(1, page - 5)
+    page_range_end = min(total_pages, page + 5)
+    # 如果范围不满10页，向另一侧扩展
+    if page_range_end - page_range_start < 10:
+        if page_range_start == 1:
+            page_range_end = min(total_pages, page_range_start + 10)
+        elif page_range_end == total_pages:
+            page_range_start = max(1, page_range_end - 10)
+
+    page_buttons = []
+    # 如果前面还有更多页，显示 << 翻页按钮
+    if page_range_start > 1:
+        page_buttons.append(InlineKeyboardButton("<<", callback_data=f"sn|{sk}|{page_range_start - 1}"))
+
+    for p in range(page_range_start, page_range_end + 1):
+        if p in sent_pages and p != page:
+            label = f"✅{p}"
+        elif p == page:
+            label = f"【{p}】"
+        else:
+            label = f"{p}"
+        page_buttons.append(InlineKeyboardButton(label, callback_data=f"sn|{sk}|{p}"))
+        # 每行5个按钮时换行
+        if len(page_buttons) == 5:
+            buttons.append(page_buttons)
+            page_buttons = []
+
+    # 如果后面还有更多页，显示 >> 翻页按钮
+    if page_range_end < total_pages:
+        page_buttons.append(InlineKeyboardButton(">>", callback_data=f"sn|{sk}|{page_range_end + 1}"))
+
+    # 添加剩余按钮
+    if page_buttons:
+        buttons.append(page_buttons)
+
+    reply_markup = InlineKeyboardMarkup(buttons)
+
+    if query:
+        try:
+            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=reply_markup)
+        except Exception:
+            await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown", reply_markup=reply_markup)
+    else:
+        await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown", reply_markup=reply_markup)
+
+
 async def _send_all(context, chat_id, col_code, query=None):
-    """发送集合全部文件"""
+    """发送集合全部文件（旧格式兼容）"""
     logger.info("_send_all: col_code=%s", col_code)
 
     status_msg = await context.bot.send_message(chat_id=chat_id, text="📤 正在准备发送...")
@@ -288,7 +423,7 @@ async def _auto_send(context, chat_id, col_code, user_id, query=None):
 
 
 async def _send_page(context, chat_id, col_code, page, query=None):
-    """分页浏览集合"""
+    """分页浏览集合（只看列表，不发送文件）"""
     logger.info("_send_page: col_code=%s, page=%d, chat_id=%s", col_code, page, chat_id)
     files = get_collection_files(col_code)
     col_info = get_collection(col_code)
@@ -303,11 +438,10 @@ async def _send_page(context, chat_id, col_code, page, query=None):
         return
 
     total = len(files)
-    per_page = 5
-    total_pages = (total + per_page - 1) // per_page
+    total_pages = (total + PER_PAGE - 1) // PER_PAGE
     page = max(1, min(page, total_pages))
-    start = (page - 1) * per_page
-    page_files = files[start:start + per_page]
+    start = (page - 1) * PER_PAGE
+    page_files = files[start:start + PER_PAGE]
 
     safe_name = escape_markdown(col_info['name'])
     text = f"📦 *{safe_name}* (第{page}/{total_pages}页，共{total}个文件)\n\n"
@@ -325,7 +459,6 @@ async def _send_page(context, chat_id, col_code, page, query=None):
             sk = k
             break
     if not sk:
-        # 如果找不到映射，重新创建
         from handlers_messages import _short_key
         sk = _short_key(context, col_code)
 
@@ -339,7 +472,7 @@ async def _send_page(context, chat_id, col_code, page, query=None):
     buttons.append(nav)
     buttons.append([InlineKeyboardButton("⬇️ 发送本页文件", callback_data=f"page_send|{col_code}|{page}")])
     buttons.append([
-        InlineKeyboardButton("⬇️ 全部发送", callback_data=f"s|{sk}"),
+        InlineKeyboardButton("⬇️ 分页发送", callback_data=f"s|{sk}"),
         InlineKeyboardButton("▶️ 自动发送", callback_data=f"a|{sk}"),
     ])
 
@@ -367,9 +500,8 @@ async def _send_page_files(context, chat_id, col_code, page, query=None):
                 await context.bot.send_message(chat_id=chat_id, text=msg)
         return
 
-    per_page = 5
-    start = (page - 1) * per_page
-    page_files = files[start:start + per_page]
+    start = (page - 1) * PER_PAGE
+    page_files = files[start:start + PER_PAGE]
     if not page_files:
         msg = "⚠️ 该页没有文件。"
         if query:
