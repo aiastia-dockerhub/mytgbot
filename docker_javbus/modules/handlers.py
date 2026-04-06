@@ -21,11 +21,10 @@ logger = logging.getLogger(__name__)
 
 
 def admin_only(func):
-    """管理员权限装饰器"""
+    """管理员权限装饰器（ADMIN_IDS 为空时所有人可用）"""
     @wraps(func)
     async def wrapper(update: Update, context: ContextTypes, *args, **kwargs):
-        user_id = update.effective_user.id
-        if user_id not in ADMIN_IDS:
+        if ADMIN_IDS and update.effective_user.id not in ADMIN_IDS:
             await update.effective_message.reply_text("⛔ 仅管理员可使用此 Bot。")
             return
         return await func(update, context, *args, **kwargs)
@@ -38,18 +37,18 @@ async def help_command(update: Update, context: ContextTypes):
     text = (
         "🔞 <b>JavBus 磁力搜索 Bot</b>\n\n"
         "📋 <b>命令列表:</b>\n"
-        "<code>/jav <番号></code> — 查询单个影片磁力链接\n"
+        "<code>/jav [番号]</code> — 查询单个影片磁力链接\n"
         "  示例: <code>/jav SSIS-406</code>\n\n"
-        "<code>/jav_star <演员id></code> — 获取演员全部影片磁力链接\n"
+        "<code>/jav_star [演员id]</code> — 获取演员全部影片磁力链接\n"
         "  示例: <code>/jav_star 2xi</code>\n\n"
-        "<code>/jav_filter <类型> <值></code> — 按类型筛选影片\n"
+        "<code>/jav_filter [类型] [值]</code> — 按类型筛选影片\n"
         "  类型: <code>star</code> <code>genre</code> <code>director</code> <code>studio</code> <code>label</code> <code>series</code>\n"
         "  示例: <code>/jav_filter star 2xi</code>\n\n"
-        "<code>/jav_search <关键词></code> — 搜索影片\n"
+        "<code>/jav_search [关键词]</code> — 搜索影片\n"
         "  示例: <code>/jav_search 三上</code>\n\n"
-        "<code>/movie <番号></code> — 查看影片详情（封面、演员、类别等）\n"
+        "<code>/movie [番号]</code> — 查看影片详情（封面、演员、类别等）\n"
         "  示例: <code>/movie SSIS-406</code>\n\n"
-        "<code>/star <演员id></code> — 查看演员信息\n"
+        "<code>/star [演员id]</code> — 查看演员信息\n"
         "  示例: <code>/star 2xi</code>\n\n"
         "📖 <b>说明:</b>\n"
         "• 演员ID 获取: 访问 javbus.com/star 页面，URL 中的ID\n"
@@ -64,7 +63,7 @@ async def jav_command(update: Update, context: ContextTypes):
     """查询单个影片的磁力链接: /jav <番号>"""
     if not context.args or len(context.args) != 1:
         await update.message.reply_text(
-            "用法: <code>/jav <番号></code>\n示例: <code>/jav SSIS-406</code>",
+            "用法: <code>/jav [番号]</code>\n示例: <code>/jav SSIS-406</code>",
             parse_mode="HTML"
         )
         return
@@ -92,11 +91,11 @@ async def jav_command(update: Update, context: ContextTypes):
         size = html_escape(m.get("size", "?"))
         hd = "🎬" if m.get("isHD") else ""
         sub = "📝" if m.get("hasSubtitle") else ""
-        link = html_escape(m['link'])
-        lines.append(f"<code>{i}. [{size}] {hd}{sub}</code> {link}")
+        lines.append(f"{i}. [{size}] {hd}{sub}")
+        lines.append(f"<code>{html_escape(m['link'])}</code>\n")
 
     if len(magnets) > 5:
-        lines.append(f"\n... 共 {len(magnets)} 个磁力链接")
+        lines.append(f"... 共 {len(magnets)} 个磁力链接")
 
     text = "\n".join(lines)
     # Telegram 消息长度限制
@@ -104,7 +103,8 @@ async def jav_command(update: Update, context: ContextTypes):
         # 太长则只发最大的
         best = max(magnets, key=lambda x: x.get('numberSize', 0) or 0)
         text = (f"🎬 <b>{html_escape(movie_id)}</b>\n{title}\n\n"
-                f"🏆 最大文件: {html_escape(best.get('size', ''))}\n<code>{html_escape(best['link'])}</code>")
+                f"🏆 最大文件: {html_escape(best.get('size', ''))}\n"
+                f"<code>{html_escape(best['link'])}</code>")
 
     await update.message.reply_text(text, parse_mode="HTML")
 
@@ -114,7 +114,7 @@ async def jav_star_command(update: Update, context: ContextTypes):
     """获取演员全部影片磁力链接: /jav_star <演员id>"""
     if not context.args or len(context.args) < 1:
         await update.message.reply_text(
-            "用法: <code>/jav_star <演员id></code>\n示例: <code>/jav_star 2xi</code>",
+            "用法: <code>/jav_star [演员id]</code>\n示例: <code>/jav_star 2xi</code>",
             parse_mode="HTML"
         )
         return
@@ -146,7 +146,7 @@ async def jav_filter_command(update: Update, context: ContextTypes):
     """按类型筛选: /jav_filter <类型> <值>"""
     if not context.args or len(context.args) < 2:
         await update.message.reply_text(
-            "用法: <code>/jav_filter <类型> <值></code>\n"
+            "用法: <code>/jav_filter [类型] [值]</code>\n"
             "类型: <code>star</code> <code>genre</code> <code>director</code> <code>studio</code> <code>label</code> <code>series</code>\n"
             "示例: <code>/jav_filter star 2xi</code>",
             parse_mode="HTML"
@@ -190,7 +190,7 @@ async def jav_search_command(update: Update, context: ContextTypes):
     """搜索影片: /jav_search <关键词>"""
     if not context.args or len(context.args) < 1:
         await update.message.reply_text(
-            "用法: <code>/jav_search <关键词></code>\n示例: <code>/jav_search 三上</code>",
+            "用法: <code>/jav_search [关键词]</code>\n示例: <code>/jav_search 三上</code>",
             parse_mode="HTML"
         )
         return
@@ -221,7 +221,7 @@ async def movie_command(update: Update, context: ContextTypes):
     """查看影片详情: /movie <番号>"""
     if not context.args or len(context.args) != 1:
         await update.message.reply_text(
-            "用法: <code>/movie <番号></code>\n示例: <code>/movie SSIS-406</code>",
+            "用法: <code>/movie [番号]</code>\n示例: <code>/movie SSIS-406</code>",
             parse_mode="HTML"
         )
         return
@@ -296,7 +296,7 @@ async def star_command(update: Update, context: ContextTypes):
     """查看演员信息: /star <演员id>"""
     if not context.args or len(context.args) != 1:
         await update.message.reply_text(
-            "用法: <code>/star <演员id></code>\n示例: <code>/star 2xi</code>\n\n"
+            "用法: <code>/star [演员id]</code>\n示例: <code>/star 2xi</code>\n\n"
             "演员ID 获取: 访问 javbus.com/star 页面 URL 中的ID",
             parse_mode="HTML"
         )
