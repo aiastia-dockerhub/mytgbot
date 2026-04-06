@@ -16,66 +16,86 @@ logger = logging.getLogger(__name__)
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """处理内联按钮回调"""
     query = update.callback_query
-    await query.answer()
-
     data = query.data
-    chat_id = query.message.chat_id
+    chat_id = query.from_user.id
     user_id = query.from_user.id
 
-    logger.info("按钮回调: data=%s, user_id=%s", data, user_id)
+    logger.info("========== 按钮回调开始 ==========")
+    logger.info("data=%s, user_id=%s, chat_id=%s", data, user_id, chat_id)
+
+    try:
+        await query.answer()
+        logger.info("query.answer() 成功")
+    except Exception as e:
+        logger.error("query.answer() 失败: %s", e)
+
     try:
         if data.startswith("col_send|"):
             col_code = data.split("|", 1)[1]
+            logger.info("全部发送: col_code=%s", col_code)
             await _send_all(context, chat_id, col_code, query)
+
         elif data.startswith("col_auto|"):
             col_code = data.split("|", 1)[1]
+            logger.info("自动发送: col_code=%s", col_code)
             await _auto_send(context, chat_id, col_code, user_id, query)
+
         elif data.startswith("col_page|"):
             first_pipe = data.index("|", len("col_page|"))
             col_code = data[len("col_page|"):first_pipe]
             page = int(data[first_pipe + 1:])
             await _send_page(context, chat_id, col_code, page, query)
+
         elif data.startswith("page_send|"):
             first_pipe = data.index("|", len("page_send|"))
             col_code = data[len("page_send|"):first_pipe]
             page = int(data[first_pipe + 1:])
             await _send_page_files(context, chat_id, col_code, page, query)
+
         elif data == "stop_auto":
             context.user_data['stop_auto_send'] = True
-            await query.edit_message_reply_markup(reply_markup=None)
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
             await context.bot.send_message(chat_id=chat_id, text="⏹ 已停止自动发送。")
+
         elif data == "noop":
             pass
+
         else:
-            await query.edit_message_text("❓ 未知操作。")
+            await context.bot.send_message(chat_id=chat_id, text=f"❓ 未知操作: {data}")
+
     except Exception as e:
-        logger.error("按钮回调处理失败: %s", e)
+        logger.error("按钮回调处理失败: %s", e, exc_info=True)
         try:
             await context.bot.send_message(chat_id=chat_id, text=f"❌ 操作失败: {e}")
-        except Exception:
-            pass
+        except Exception as e2:
+            logger.error("发送错误消息也失败: %s", e2)
+
+    logger.info("========== 按钮回调结束 ==========")
 
 
 async def _send_all(context, chat_id, col_code, query=None):
     """发送集合全部文件"""
-    logger.info("_send_all 开始: col_code=%s", col_code)
+    logger.info("_send_all: col_code=%s", col_code)
+
+    # 先发一条确认消息（确保用户能看到反馈）
+    status_msg = await context.bot.send_message(chat_id=chat_id, text="📤 正在准备发送...")
+
     files = get_collection_files(col_code)
-    logger.info("_send_all 查询到 %d 个文件", len(files) if files else 0)
+    logger.info("_send_all: 查询到 %d 个文件", len(files) if files else 0)
+
     if not files:
-        if query:
-            await query.edit_message_text("⚠️ 集合为空。")
+        await context.bot.edit_message_text(chat_id=chat_id, message_id=status_msg.message_id, text="⚠️ 集合为空或不存在。")
         return
 
     total = len(files)
-    sent_count = 0
 
-    if query:
-        await query.edit_message_text(f"📤 正在发送... (0/{total})")
-
+    # 打印文件详情
     for f in files:
-        logger.info("  文件: code=%s type=%s file_id=%s...(%d chars)",
-                     f.get('code'), f.get('file_type'),
-                     str(f.get('telegram_file_id', ''))[:30],
+        logger.info("  文件: type=%s, file_id=%s (len=%d)",
+                     f.get('file_type'), str(f.get('telegram_file_id', ''))[:40],
                      len(str(f.get('telegram_file_id', ''))))
 
     pv = [f for f in files if f['file_type'] in ('photo', 'video')]
@@ -83,6 +103,9 @@ async def _send_all(context, chat_id, col_code, query=None):
     audios = [f for f in files if f['file_type'] in ('audio', 'voice')]
     logger.info("分组: photo+video=%d, document=%d, audio=%d", len(pv), len(docs), len(audios))
 
+    await context.bot.edit_message_text(chat_id=chat_id, message_id=status_msg.message_id, text=f"📤 正在发送... (0/{total})")
+
+    sent_count = 0
     batch_num = 0
     for group in [pv, docs, audios]:
         for i in range(0, len(group), GROUP_SEND_SIZE):
@@ -90,7 +113,7 @@ async def _send_all(context, chat_id, col_code, query=None):
             try:
                 sent = await send_file_group(context, chat_id, batch)
                 sent_count += sent
-                logger.info("batch sent: %d, total: %d/%d", sent, sent_count, total)
+                logger.info("batch: sent=%d, total=%d/%d", sent, sent_count, total)
             except Exception as e:
                 logger.error("批量发送失败: %s", e, exc_info=True)
             batch_num += 1
@@ -99,19 +122,22 @@ async def _send_all(context, chat_id, col_code, query=None):
 
     result_text = f"✅ 发送完成！成功 {sent_count}/{total}"
     logger.info("_send_all 完成: %s", result_text)
-    if query:
-        try:
-            await query.edit_message_text(result_text)
-        except Exception:
-            await context.bot.send_message(chat_id=chat_id, text=result_text)
+    try:
+        await context.bot.edit_message_text(chat_id=chat_id, message_id=status_msg.message_id, text=result_text)
+    except Exception:
+        await context.bot.send_message(chat_id=chat_id, text=result_text)
 
 
 async def _auto_send(context, chat_id, col_code, user_id, query=None):
     """自动发送集合文件（每组间隔）"""
     files = get_collection_files(col_code)
     if not files:
+        msg = "⚠️ 集合为空。"
         if query:
-            await query.edit_message_text("⚠️ 集合为空。")
+            try:
+                await query.edit_message_text(msg)
+            except Exception:
+                await context.bot.send_message(chat_id=chat_id, text=msg)
         return
 
     total = len(files)
@@ -119,8 +145,10 @@ async def _auto_send(context, chat_id, col_code, user_id, query=None):
 
     keyboard = [[InlineKeyboardButton("⏹ 停止发送", callback_data="stop_auto")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    if query:
-        await query.edit_message_text(f"▶️ 自动发送中... (0/{total})", reply_markup=reply_markup)
+
+    status_msg = await context.bot.send_message(
+        chat_id=chat_id, text=f"▶️ 自动发送中... (0/{total})", reply_markup=reply_markup
+    )
 
     pv = [f for f in files if f['file_type'] in ('photo', 'video')]
     docs = [f for f in files if f['file_type'] == 'document']
@@ -143,28 +171,23 @@ async def _auto_send(context, chat_id, col_code, user_id, query=None):
             logger.error("自动发送组失败: %s", e)
 
         try:
-            if query:
-                await context.bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=query.message.message_id,
-                    text=f"▶️ 自动发送中... ({sent_count}/{total})",
-                    reply_markup=reply_markup
-                )
+            await context.bot.edit_message_text(
+                chat_id=chat_id, message_id=status_msg.message_id,
+                text=f"▶️ 自动发送中... ({sent_count}/{total})",
+                reply_markup=reply_markup
+            )
         except Exception:
             pass
 
         if idx < len(all_groups) - 1:
             await asyncio.sleep(AUTO_SEND_INTERVAL)
 
-    # 完成
     try:
-        if query:
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=query.message.message_id,
-                text=f"✅ 自动发送完成！成功 {sent_count}/{total}",
-                reply_markup=None
-            )
+        await context.bot.edit_message_text(
+            chat_id=chat_id, message_id=status_msg.message_id,
+            text=f"✅ 自动发送完成！成功 {sent_count}/{total}",
+            reply_markup=None
+        )
     except Exception:
         await context.bot.send_message(chat_id=chat_id, text=f"✅ 自动发送完成！成功 {sent_count}/{total}")
 
@@ -174,8 +197,12 @@ async def _send_page(context, chat_id, col_code, page, query=None):
     files = get_collection_files(col_code)
     col_info = get_collection(col_code)
     if not files or not col_info:
+        msg = "⚠️ 集合为空或不存在。"
         if query:
-            await query.edit_message_text("⚠️ 集合为空或不存在。")
+            try:
+                await query.edit_message_text(msg)
+            except Exception:
+                await context.bot.send_message(chat_id=chat_id, text=msg)
         return
 
     total = len(files)
@@ -221,16 +248,24 @@ async def _send_page_files(context, chat_id, col_code, page, query=None):
     """发送指定页的文件"""
     files = get_collection_files(col_code)
     if not files:
+        msg = "⚠️ 集合为空。"
         if query:
-            await query.edit_message_text("⚠️ 集合为空。")
+            try:
+                await query.edit_message_text(msg)
+            except Exception:
+                await context.bot.send_message(chat_id=chat_id, text=msg)
         return
 
     per_page = 5
     start = (page - 1) * per_page
     page_files = files[start:start + per_page]
     if not page_files:
+        msg = "⚠️ 该页没有文件。"
         if query:
-            await query.edit_message_text("⚠️ 该页没有文件。")
+            try:
+                await query.edit_message_text(msg)
+            except Exception:
+                await context.bot.send_message(chat_id=chat_id, text=msg)
         return
 
     sent = await send_file_group(context, chat_id, page_files)
