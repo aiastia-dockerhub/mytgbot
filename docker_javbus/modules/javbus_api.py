@@ -1,0 +1,199 @@
+"""
+JavBus API 客户端封装
+基于 https://github.com/ovnrain/javbus-api
+"""
+import asyncio
+import logging
+import aiohttp
+from config import (
+    JAVBUS_API_URL, JAVBUS_AUTH_TOKEN, DEFAULT_TYPE,
+    MAGNET_SORT_BY, MAGNET_SORT_ORDER, MAX_CONCURRENT, MAX_PAGES
+)
+
+logger = logging.getLogger(__name__)
+
+
+def _get_headers():
+    """构建请求头（含可选认证 Token）"""
+    headers = {}
+    if JAVBUS_AUTH_TOKEN:
+        headers['j-auth-token'] = JAVBUS_AUTH_TOKEN
+    return headers
+
+
+async def get_movie_detail(session, movie_id):
+    """获取影片详情 /api/movies/{movieId}"""
+    url = f"{JAVBUS_API_URL}/api/movies/{movie_id}"
+    try:
+        async with session.get(url) as resp:
+            if resp.status == 200:
+                return await resp.json()
+            logger.error("获取影片详情失败 %s: HTTP %s", movie_id, resp.status)
+            return None
+    except aiohttp.ClientError as e:
+        logger.error("请求影片详情异常 %s: %s", movie_id, e)
+        return None
+
+
+async def get_magnets(session, movie_id, gid, uc):
+    """获取影片磁力链接 /api/magnets/{movieId}"""
+    url = f"{JAVBUS_API_URL}/api/magnets/{movie_id}"
+    params = {"gid": gid, "uc": uc}
+    if MAGNET_SORT_BY:
+        params["sortBy"] = MAGNET_SORT_BY
+    if MAGNET_SORT_ORDER:
+        params["sortOrder"] = MAGNET_SORT_ORDER
+    try:
+        async with session.get(url, params=params) as resp:
+            if resp.status == 200:
+                return await resp.json()
+            logger.error("获取磁力链接失败 %s: HTTP %s", movie_id, resp.status)
+            return None
+    except aiohttp.ClientError as e:
+        logger.error("请求磁力链接异常 %s: %s", movie_id, e)
+        return None
+
+
+async def get_star_info(session, star_id):
+    """获取演员详情 /api/stars/{starId}"""
+    url = f"{JAVBUS_API_URL}/api/stars/{star_id}"
+    params = {}
+    if DEFAULT_TYPE:
+        params["type"] = DEFAULT_TYPE
+    try:
+        async with session.get(url, params=params) as resp:
+            if resp.status == 200:
+                return await resp.json()
+            logger.error("获取演员详情失败 %s: HTTP %s", star_id, resp.status)
+            return None
+    except aiohttp.ClientError as e:
+        logger.error("请求演员详情异常 %s: %s", star_id, e)
+        return None
+
+
+async def _get_movie_ids_page(session, params, page):
+    """获取单页影片列表，返回 (movie_ids, has_next_page)"""
+    params = {**params, "page": str(page)}
+    url = f"{JAVBUS_API_URL}/api/movies"
+    try:
+        async with session.get(url, params=params) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                movie_ids = [m['id'] for m in data.get('movies', [])]
+                has_next = data.get('pagination', {}).get('hasNextPage', False)
+                return movie_ids, has_next
+            logger.error("获取影片列表失败: HTTP %s", resp.status)
+            return [], False
+    except aiohttp.ClientError as e:
+        logger.error("请求影片列表异常: %s", e)
+        return [], False
+
+
+async def _search_movie_ids_page(session, keyword, page):
+    """搜索影片单页，返回 (movie_ids, has_next_page)"""
+    url = f"{JAVBUS_API_URL}/api/movies/search"
+    params = {"keyword": keyword, "page": str(page), "magnet": "exist"}
+    if DEFAULT_TYPE:
+        params["type"] = DEFAULT_TYPE
+    try:
+        async with session.get(url, params=params) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                movie_ids = [m['id'] for m in data.get('movies', [])]
+                has_next = data.get('pagination', {}).get('hasNextPage', False)
+                return movie_ids, has_next
+            logger.error("搜索影片失败: HTTP %s", resp.status)
+            return [], False
+    except aiohttp.ClientError as e:
+        logger.error("搜索影片异常: %s", e)
+        return [], False
+
+
+async def get_all_movie_ids_by_filter(filter_type, filter_value):
+    """按筛选条件获取所有影片 ID（自动翻页）"""
+    params = {
+        "filterType": filter_type,
+        "filterValue": filter_value,
+        "magnet": "exist"
+    }
+    if DEFAULT_TYPE:
+        params["type"] = DEFAULT_TYPE
+
+    all_ids = []
+    headers = _get_headers()
+    async with aiohttp.ClientSession(headers=headers) as session:
+        page = 1
+        while page <= MAX_PAGES:
+            ids, has_next = await _get_movie_ids_page(session, params, page)
+            all_ids.extend(ids)
+            if not has_next or not ids:
+                break
+            page += 1
+    return all_ids
+
+
+async def search_all_movie_ids(keyword):
+    """搜索获取所有影片 ID（自动翻页）"""
+    all_ids = []
+    headers = _get_headers()
+    async with aiohttp.ClientSession(headers=headers) as session:
+        page = 1
+        while page <= MAX_PAGES:
+            ids, has_next = await _search_movie_ids_page(session, keyword, page)
+            all_ids.extend(ids)
+            if not has_next or not ids:
+                break
+            page += 1
+    return all_ids
+
+
+async def _fetch_magnet_for_movie(session, movie_id, semaphore):
+    """获取单个影片的最大磁力链接"""
+    async with semaphore:
+        detail = await get_movie_detail(session, movie_id)
+        if not detail:
+            return None
+        gid = detail.get("gid", "")
+        uc = detail.get("uc", "")
+        if not gid:
+            return None
+        magnets = await get_magnets(session, movie_id, gid, uc)
+        if not magnets:
+            return None
+        # 取最大的磁力链接
+        max_magnet = max(magnets, key=lambda x: x.get('numberSize', 0) or 0)
+        return {
+            "id": movie_id,
+            "title": detail.get("title", ""),
+            "link": max_magnet.get("link", ""),
+            "size": max_magnet.get("size", ""),
+            "isHD": max_magnet.get("isHD", False),
+            "hasSubtitle": max_magnet.get("hasSubtitle", False),
+        }
+
+
+async def get_magnets_for_movie_list(movie_ids):
+    """批量获取影片的最大磁力链接"""
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT)
+    headers = _get_headers()
+    results = []
+    async with aiohttp.ClientSession(headers=headers) as session:
+        tasks = [_fetch_magnet_for_movie(session, mid, semaphore) for mid in movie_ids]
+        completed = await asyncio.gather(*tasks)
+        results = [r for r in completed if r is not None]
+    return results
+
+
+async def get_single_movie_magnet(movie_id):
+    """获取单个影片的详情和磁力链接"""
+    headers = _get_headers()
+    async with aiohttp.ClientSession(headers=headers) as session:
+        detail = await get_movie_detail(session, movie_id)
+        if not detail:
+            return None
+        gid = detail.get("gid", "")
+        uc = detail.get("uc", "")
+        if not gid:
+            return {"detail": detail, "magnets": []}
+        magnets = await get_magnets(session, movie_id, gid, uc)
+        return {"detail": detail, "magnets": magnets or []}

@@ -1,0 +1,20 @@
+services:
+  tg-javbus:
+    build: .
+    image: aiastia/mytgbot:javbus
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+      - BOT_TOKEN=${BOT_TOKEN}
+      - ADMIN_IDS=${ADMIN_IDS}
+      - JAVBUS_API_URL=${JAVBUS_API_URL}
+      - JAVBUS_AUTH_TOKEN=${JAVBUS_AUTH_TOKEN:-}
+      - DEFAULT_TYPE=${DEFAULT_TYPE:-normal}
+      - MAGNET_SORT_BY=${MAGNET_SORT_BY:-size}
+      - MAGNET_SORT_ORDER=${MAGNET_SORT_ORDER:-desc}
+      - MAX_CONCURRENT=${MAX_CONCURRENT:-10}
+      - MAX_PAGES=${MAX_PAGES:-20}
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"

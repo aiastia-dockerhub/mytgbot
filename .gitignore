@@ -3,6 +3,11 @@
 *.db
 __pycache__/
 *.pyc
+*.so
+*.c
+build_temp/
+build/
+*.egg-info/
 token.txt
 user_tokens/*.json
 *.session
