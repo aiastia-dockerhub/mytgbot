@@ -2,9 +2,10 @@
 JavBus 磁力搜索 Telegram Bot
 通过 javbus-api 获取影片信息和磁力链接
 """
+import asyncio
 import logging
 import sys
-from telegram.ext import Application, ApplicationBuilder, CommandHandler
+from telegram.ext import Application, ApplicationBuilder, CommandHandler, CallbackQueryHandler
 
 # 配置日志
 logging.basicConfig(
@@ -25,7 +26,25 @@ from modules.handlers import (
     jav_search_command,
     movie_command,
     star_command,
+    stop_command,
+    button_callback,
 )
+
+
+async def post_init(application):
+    """Bot 初始化后自动注册命令列表（让用户在输入框看到命令提示）"""
+    commands = [
+        ("jav", "查询影片磁力链接"),
+        ("jav_star", "获取演员全部影片磁力"),
+        ("jav_filter", "按类型筛选影片"),
+        ("jav_search", "搜索影片"),
+        ("movie", "查看影片详情"),
+        ("star", "查看演员信息"),
+        ("stop", "停止当前批量任务"),
+        ("help", "查看帮助"),
+    ]
+    await application.bot.set_my_commands(commands)
+    logger.info("已注册 %d 个 Telegram 命令", len(commands))
 
 
 def main():
@@ -41,13 +60,24 @@ def main():
     logger.info("Bot 启动中... ADMIN_IDS: %s, API: %s", ADMIN_IDS, JAVBUS_API_URL)
 
     # 创建 Bot Application
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    application = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .post_init(post_init)
+        .build()
+    )
 
     # ==================== 注册命令 ====================
 
     # 帮助
     application.add_handler(CommandHandler("start", help_command))
     application.add_handler(CommandHandler("help", help_command))
+
+    # 停止任务
+    application.add_handler(CommandHandler("stop", stop_command))
+
+    # 按钮回调
+    application.add_handler(CallbackQueryHandler(button_callback))
 
     # 磁力链接查询
     application.add_handler(CommandHandler("jav", jav_command))

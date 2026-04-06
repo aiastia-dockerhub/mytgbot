@@ -1,11 +1,12 @@
 """
 Telegram 命令处理器
 """
+import asyncio
 import io
 import logging
 import aiohttp
 from html import escape as html_escape
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from functools import wraps
 from config import ADMIN_IDS, JAVBUS_API_URL
@@ -19,6 +20,9 @@ from modules.javbus_api import (
 
 logger = logging.getLogger(__name__)
 
+# 每个 chat_id 对应的取消事件
+_cancel_events: dict[int, asyncio.Event] = {}
+
 
 def admin_only(func):
     """管理员权限装饰器（ADMIN_IDS 为空时所有人可用）"""
@@ -31,6 +35,13 @@ def admin_only(func):
     return wrapper
 
 
+def _get_cancel_event(chat_id: int) -> asyncio.Event:
+    """获取或创建取消事件"""
+    if chat_id not in _cancel_events:
+        _cancel_events[chat_id] = asyncio.Event()
+    return _cancel_events[chat_id]
+
+
 @admin_only
 async def help_command(update: Update, context: ContextTypes):
     """帮助命令"""
@@ -39,7 +50,7 @@ async def help_command(update: Update, context: ContextTypes):
         "📋 <b>命令列表:</b>\n"
         "<code>/jav [番号]</code> — 查询单个影片磁力链接\n"
         "  示例: <code>/jav SSIS-406</code>\n\n"
-        "<code>/jav_star [演员id]</code> — 获取演员全部影片磁力链接\n"
+        "<code>/jav_star [演员id]</code> — 直接获取演员全部影片磁力链接\n"
         "  示例: <code>/jav_star 2xi</code>\n\n"
         "<code>/jav_filter [类型] [值]</code> — 按类型筛选影片\n"
         "  类型: <code>star</code> <code>genre</code> <code>director</code> <code>studio</code> <code>label</code> <code>series</code>\n"
@@ -50,17 +61,31 @@ async def help_command(update: Update, context: ContextTypes):
         "  示例: <code>/movie SSIS-406</code>\n\n"
         "<code>/star [演员id]</code> — 查看演员信息\n"
         "  示例: <code>/star 2xi</code>\n\n"
+        "<code>/stop</code> — 停止当前批量任务\n\n"
         "📖 <b>说明:</b>\n"
         "• 演员ID 获取: 访问 javbus.com/star 页面，URL 中的ID\n"
-        "• <code>/jav_star</code> 和 <code>/jav_filter</code> 结果以文件形式发送\n"
-        "• <code>/jav</code> 直接返回磁力链接文本"
+        "• <code>/jav_star</code> 直接收集磁力链接并返回文件\n"
+        "• <code>/jav_filter</code> 和 <code>/jav_search</code> 先展示影片列表，确认后再收集磁力\n"
+        "• 批量任务执行中可随时用 <code>/stop</code> 停止"
     )
     await update.message.reply_text(text, parse_mode="HTML")
 
 
 @admin_only
+async def stop_command(update: Update, context: ContextTypes):
+    """停止当前批量任务"""
+    chat_id = update.effective_chat.id
+    event = _cancel_events.get(chat_id)
+    if event and not event.is_set():
+        event.set()
+        await update.message.reply_text("⏹ 已发送停止信号，正在中止...")
+    else:
+        await update.message.reply_text("ℹ️ 当前没有正在运行的任务")
+
+
+@admin_only
 async def jav_command(update: Update, context: ContextTypes):
-    """查询单个影片的磁力链接: /jav <番号>"""
+    """查询单个影片的磁力链接"""
     if not context.args or len(context.args) != 1:
         await update.message.reply_text(
             "用法: <code>/jav [番号]</code>\n示例: <code>/jav SSIS-406</code>",
@@ -69,21 +94,29 @@ async def jav_command(update: Update, context: ContextTypes):
         return
 
     movie_id = context.args[0].upper()
-    await update.message.reply_text(f"🔍 正在查询 <code>{html_escape(movie_id)}</code> ...", parse_mode="HTML")
+    await update.message.reply_text(
+        f"🔍 正在查询 <code>{html_escape(movie_id)}</code> ...",
+        parse_mode="HTML"
+    )
 
     result = await get_single_movie_magnet(movie_id)
     if not result:
-        await update.message.reply_text(f"❌ 未找到影片 <code>{html_escape(movie_id)}</code>", parse_mode="HTML")
+        await update.message.reply_text(
+            f"❌ 未找到影片 <code>{html_escape(movie_id)}</code>",
+            parse_mode="HTML"
+        )
         return
 
     detail = result["detail"]
     magnets = result["magnets"]
 
     if not magnets:
-        await update.message.reply_text(f"❌ 影片 <code>{html_escape(movie_id)}</code> 暂无磁力链接", parse_mode="HTML")
+        await update.message.reply_text(
+            f"❌ 影片 <code>{html_escape(movie_id)}</code> 暂无磁力链接",
+            parse_mode="HTML"
+        )
         return
 
-    # 构建回复消息
     title = html_escape(detail.get("title", movie_id))
     lines = [f"🎬 <b>{html_escape(movie_id)}</b>\n{title}\n"]
 
@@ -98,20 +131,22 @@ async def jav_command(update: Update, context: ContextTypes):
         lines.append(f"... 共 {len(magnets)} 个磁力链接")
 
     text = "\n".join(lines)
-    # Telegram 消息长度限制
     if len(text) > 4000:
-        # 太长则只发最大的
         best = max(magnets, key=lambda x: x.get('numberSize', 0) or 0)
-        text = (f"🎬 <b>{html_escape(movie_id)}</b>\n{title}\n\n"
-                f"🏆 最大文件: {html_escape(best.get('size', ''))}\n"
-                f"<code>{html_escape(best['link'])}</code>")
+        text = (
+            f"🎬 <b>{html_escape(movie_id)}</b>\n{title}\n\n"
+            f"🏆 最大文件: {html_escape(best.get('size', ''))}\n"
+            f"<code>{html_escape(best['link'])}</code>"
+        )
 
     await update.message.reply_text(text, parse_mode="HTML")
 
 
+# ==================== jav_star: 直接收集磁力 ====================
+
 @admin_only
 async def jav_star_command(update: Update, context: ContextTypes):
-    """获取演员全部影片磁力链接: /jav_star <演员id>"""
+    """获取演员全部影片磁力链接（直接收集，不确认）"""
     if not context.args or len(context.args) < 1:
         await update.message.reply_text(
             "用法: <code>/jav_star [演员id]</code>\n示例: <code>/jav_star 2xi</code>",
@@ -120,30 +155,58 @@ async def jav_star_command(update: Update, context: ContextTypes):
         return
 
     star_id = context.args[0]
-    await update.message.reply_text(
-        f"🔍 正在获取演员 <code>{html_escape(star_id)}</code> 的全部影片，请稍候...",
+    chat_id = update.effective_chat.id
+    cancel_event = _get_cancel_event(chat_id)
+    cancel_event.clear()
+
+    status_msg = await update.message.reply_text(
+        f"🔍 正在获取演员 <code>{html_escape(star_id)}</code> 的影片列表...",
         parse_mode="HTML"
     )
 
     movie_ids = await get_all_movie_ids_by_filter("star", star_id)
     if not movie_ids:
-        await update.message.reply_text(f"❌ 未找到演员 <code>{html_escape(star_id)}</code> 的影片", parse_mode="HTML")
+        await update.message.reply_text(
+            f"❌ 未找到演员 <code>{html_escape(star_id)}</code> 的影片",
+            parse_mode="HTML"
+        )
         return
 
-    results = await get_magnets_for_movie_list(movie_ids)
+    await status_msg.edit_text(
+        f"📋 找到 <b>{len(movie_ids)}</b> 部影片，正在逐个收集磁力链接...\n"
+        f"磁力链接收集: <b>0/{len(movie_ids)}</b>",
+        parse_mode="HTML"
+    )
+
+    async def _progress(done, total):
+        await status_msg.edit_text(
+            f"📋 共 {total} 部影片，正在逐个收集磁力链接...\n"
+            f"磁力链接收集: <b>{done}/{total}</b>",
+            parse_mode="HTML"
+        )
+
+    results = await get_magnets_for_movie_list(
+        movie_ids, progress_callback=_progress, cancel_event=cancel_event
+    )
+
+    if cancel_event.is_set():
+        await update.message.reply_text("⏹ 任务已停止")
+        return
+
     if not results:
         await update.message.reply_text("❌ 未能获取到磁力链接")
         return
 
-    # 生成 txt 文件（只保留 magnet 链接）
     lines = [r['link'] for r in results if r.get('link')]
     content = "\n".join(lines)
     await _send_magnet_file(update, context, content, f"star_{star_id}.txt", len(results))
 
 
+# ==================== jav_filter: 先展示再确认 ====================
+
 @admin_only
 async def jav_filter_command(update: Update, context: ContextTypes):
-    """按类型筛选: /jav_filter <类型> <值>"""
+    """按类型筛选：先收集影片 ID，展示后让用户确认是否收集磁力"""
     if not context.args or len(context.args) < 2:
         await update.message.reply_text(
             "用法: <code>/jav_filter [类型] [值]</code>\n"
@@ -165,8 +228,8 @@ async def jav_filter_command(update: Update, context: ContextTypes):
         )
         return
 
-    await update.message.reply_text(
-        f"🔍 正在按 <code>{html_escape(filter_type)}={html_escape(filter_value)}</code> 筛选，请稍候...",
+    status_msg = await update.message.reply_text(
+        f"🔍 正在按 <code>{html_escape(filter_type)}={html_escape(filter_value)}</code> 筛选影片列表...",
         parse_mode="HTML"
     )
 
@@ -175,19 +238,30 @@ async def jav_filter_command(update: Update, context: ContextTypes):
         await update.message.reply_text("❌ 未找到符合条件的影片")
         return
 
-    results = await get_magnets_for_movie_list(movie_ids)
-    if not results:
-        await update.message.reply_text("❌ 未能获取到磁力链接")
-        return
+    # 展示影片列表 + 确认按钮
+    movie_list = ", ".join(f"<code>{html_escape(mid)}</code>" for mid in movie_ids[:50])
+    text = (
+        f"📋 按 <code>{html_escape(filter_type)}={html_escape(filter_value)}</code> 筛选到 <b>{len(movie_ids)}</b> 部影片：\n\n"
+        f"{movie_list}"
+    )
+    if len(movie_ids) > 50:
+        text += f"\n\n... 等共 {len(movie_ids)} 部"
 
-    lines = [r['link'] for r in results if r.get('link')]
-    content = "\n".join(lines)
-    await _send_magnet_file(update, context, content, f"{filter_type}_{filter_value}.txt", len(results))
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ 收集磁力链接", callback_data=f"magnet:filter:{filter_type}:{filter_value}"),
+            InlineKeyboardButton("❌ 取消", callback_data="cancel"),
+        ]
+    ])
 
+    await status_msg.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+
+
+# ==================== jav_search: 先展示再确认 ====================
 
 @admin_only
 async def jav_search_command(update: Update, context: ContextTypes):
-    """搜索影片: /jav_search <关键词>"""
+    """搜索影片：先收集影片 ID，展示后让用户确认是否收集磁力"""
     if not context.args or len(context.args) < 1:
         await update.message.reply_text(
             "用法: <code>/jav_search [关键词]</code>\n示例: <code>/jav_search 三上</code>",
@@ -196,29 +270,173 @@ async def jav_search_command(update: Update, context: ContextTypes):
         return
 
     keyword = " ".join(context.args)
-    await update.message.reply_text(
-        f"🔍 正在搜索 <code>{html_escape(keyword)}</code>，请稍候...",
+    status_msg = await update.message.reply_text(
+        f"🔍 正在搜索影片 <code>{html_escape(keyword)}</code> ...",
         parse_mode="HTML"
     )
 
     movie_ids = await search_all_movie_ids(keyword)
     if not movie_ids:
-        await update.message.reply_text(f"❌ 未找到关键词 <code>{html_escape(keyword)}</code> 的影片", parse_mode="HTML")
+        await update.message.reply_text(
+            f"❌ 未找到关键词 <code>{html_escape(keyword)}</code> 的影片",
+            parse_mode="HTML"
+        )
         return
 
-    results = await get_magnets_for_movie_list(movie_ids)
+    # 展示影片列表 + 确认按钮
+    movie_list = ", ".join(f"<code>{html_escape(mid)}</code>" for mid in movie_ids[:50])
+    text = (
+        f"📋 搜索 <code>{html_escape(keyword)}</code> 找到 <b>{len(movie_ids)}</b> 部影片：\n\n"
+        f"{movie_list}"
+    )
+    if len(movie_ids) > 50:
+        text += f"\n\n... 等共 {len(movie_ids)} 部"
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ 收集磁力链接", callback_data=f"magnet:search:{keyword}"),
+            InlineKeyboardButton("❌ 取消", callback_data="cancel"),
+        ]
+    ])
+
+    await status_msg.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+
+
+# ==================== 按钮回调处理 ====================
+
+async def button_callback(update: Update, context: ContextTypes):
+    """处理内联按钮回调"""
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data
+
+    # 取消按钮
+    if data == "cancel":
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.edit_message_text(query.message.text + "\n\n❌ 已取消")
+        return
+
+    # 收集磁力链接
+    if data.startswith("magnet:"):
+        parts = data.split(":", 2)
+        action = parts[1]  # filter / search
+        param = parts[2]   # type:value / keyword
+
+        # 移除旧按钮
+        await query.edit_message_reply_markup(reply_markup=None)
+
+        cancel_event = _get_cancel_event(update.effective_chat.id)
+        cancel_event.clear()
+
+        if action == "filter":
+            filter_type, filter_value = param.split(":", 1)
+            await _collect_magnets_from_filter(query, context, filter_type, filter_value, cancel_event)
+        elif action == "search":
+            await _collect_magnets_from_search(query, context, param, cancel_event)
+
+
+async def _collect_magnets_from_filter(query, context, filter_type, filter_value, cancel_event):
+    """从筛选结果收集磁力链接"""
+    status_msg = await query.message.reply_text(
+        f"🔍 正在重新获取影片列表...",
+        parse_mode="HTML"
+    )
+
+    movie_ids = await get_all_movie_ids_by_filter(filter_type, filter_value)
+    if not movie_ids:
+        await status_msg.edit_text("❌ 未找到影片")
+        return
+
+    await status_msg.edit_text(
+        f"📋 共 <b>{len(movie_ids)}</b> 部影片，正在逐个收集磁力链接...\n"
+        f"磁力链接收集: <b>0/{len(movie_ids)}</b>",
+        parse_mode="HTML"
+    )
+
+    async def _progress(done, total):
+        if cancel_event.is_set():
+            return
+        await status_msg.edit_text(
+            f"📋 共 {total} 部影片，正在逐个收集磁力链接...\n"
+            f"磁力链接收集: <b>{done}/{total}</b>",
+            parse_mode="HTML"
+        )
+
+    results = await get_magnets_for_movie_list(
+        movie_ids, progress_callback=_progress, cancel_event=cancel_event
+    )
+
+    if cancel_event.is_set():
+        await query.message.reply_text("⏹ 任务已停止")
+        return
+
     if not results:
-        await update.message.reply_text("❌ 未能获取到磁力链接")
+        await query.message.reply_text("❌ 未能获取到磁力链接")
         return
 
     lines = [r['link'] for r in results if r.get('link')]
     content = "\n".join(lines)
-    await _send_magnet_file(update, context, content, f"search_{keyword}.txt", len(results))
+    await _send_magnet_file_by_chat(
+        context, update=None, chat_id=query.message.chat_id,
+        content=content, filename=f"{filter_type}_{filter_value}.txt",
+        count=len(results), reply_to=None
+    )
 
+
+async def _collect_magnets_from_search(query, context, keyword, cancel_event):
+    """从搜索结果收集磁力链接"""
+    status_msg = await query.message.reply_text(
+        "🔍 正在重新搜索影片列表...",
+        parse_mode="HTML"
+    )
+
+    movie_ids = await search_all_movie_ids(keyword)
+    if not movie_ids:
+        await status_msg.edit_text("❌ 未找到影片")
+        return
+
+    await status_msg.edit_text(
+        f"📋 共 <b>{len(movie_ids)}</b> 部影片，正在逐个收集磁力链接...\n"
+        f"磁力链接收集: <b>0/{len(movie_ids)}</b>",
+        parse_mode="HTML"
+    )
+
+    async def _progress(done, total):
+        if cancel_event.is_set():
+            return
+        await status_msg.edit_text(
+            f"📋 共 {total} 部影片，正在逐个收集磁力链接...\n"
+            f"磁力链接收集: <b>{done}/{total}</b>",
+            parse_mode="HTML"
+        )
+
+    results = await get_magnets_for_movie_list(
+        movie_ids, progress_callback=_progress, cancel_event=cancel_event
+    )
+
+    if cancel_event.is_set():
+        await query.message.reply_text("⏹ 任务已停止")
+        return
+
+    if not results:
+        await query.message.reply_text("❌ 未能获取到磁力链接")
+        return
+
+    lines = [r['link'] for r in results if r.get('link')]
+    content = "\n".join(lines)
+    await _send_magnet_file_by_chat(
+        context, update=None, chat_id=query.message.chat_id,
+        content=content, filename=f"search_{keyword}.txt",
+        count=len(results), reply_to=None
+    )
+
+
+# ==================== movie & star 详情 ====================
 
 @admin_only
 async def movie_command(update: Update, context: ContextTypes):
-    """查看影片详情: /movie <番号>"""
+    """查看影片详情"""
     if not context.args or len(context.args) != 1:
         await update.message.reply_text(
             "用法: <code>/movie [番号]</code>\n示例: <code>/movie SSIS-406</code>",
@@ -227,16 +445,21 @@ async def movie_command(update: Update, context: ContextTypes):
         return
 
     movie_id = context.args[0].upper()
-    await update.message.reply_text(f"🔍 正在获取 <code>{html_escape(movie_id)}</code> 详情...", parse_mode="HTML")
+    await update.message.reply_text(
+        f"🔍 正在获取 <code>{html_escape(movie_id)}</code> 详情...",
+        parse_mode="HTML"
+    )
 
     result = await get_single_movie_magnet(movie_id)
     if not result:
-        await update.message.reply_text(f"❌ 未找到影片 <code>{html_escape(movie_id)}</code>", parse_mode="HTML")
+        await update.message.reply_text(
+            f"❌ 未找到影片 <code>{html_escape(movie_id)}</code>",
+            parse_mode="HTML"
+        )
         return
 
     detail = result["detail"]
 
-    # 构建详情消息
     lines = [f"🎬 <b>{html_escape(detail.get('id', movie_id))}</b>"]
     lines.append(f"📝 {html_escape(detail.get('title', ''))}")
     lines.append(f"📅 日期: {html_escape(detail.get('date', 'N/A'))}")
@@ -261,10 +484,8 @@ async def movie_command(update: Update, context: ContextTypes):
         genre_names = ", ".join(html_escape(g.get('name', '')) for g in genres)
         lines.append(f"🏷 类别: {genre_names}")
 
-    # 尝试发送封面图
     img_url = detail.get('img', '')
     if img_url:
-        # 替换为封面大图
         cover_url = img_url.replace('/thumb/', '/cover/').replace('.jpg', '_b.jpg')
         try:
             async with aiohttp.ClientSession() as session:
@@ -272,7 +493,7 @@ async def movie_command(update: Update, context: ContextTypes):
                     if resp.status == 200:
                         img_data = io.BytesIO(await resp.read())
                         img_data.seek(0)
-                        caption = "\n".join(lines[:8])  # 限制 caption 长度
+                        caption = "\n".join(lines[:8])
                         if len(caption) > 1024:
                             caption = caption[:1020] + "..."
                         await update.message.reply_photo(
@@ -284,7 +505,6 @@ async def movie_command(update: Update, context: ContextTypes):
         except Exception as e:
             logger.warning("发送封面图失败: %s", e)
 
-    # 如果图片发送失败，纯文本发送
     text = "\n".join(lines)
     if len(text) > 4000:
         text = text[:3996] + "..."
@@ -293,7 +513,7 @@ async def movie_command(update: Update, context: ContextTypes):
 
 @admin_only
 async def star_command(update: Update, context: ContextTypes):
-    """查看演员信息: /star <演员id>"""
+    """查看演员信息"""
     if not context.args or len(context.args) != 1:
         await update.message.reply_text(
             "用法: <code>/star [演员id]</code>\n示例: <code>/star 2xi</code>\n\n"
@@ -303,7 +523,10 @@ async def star_command(update: Update, context: ContextTypes):
         return
 
     star_id = context.args[0]
-    await update.message.reply_text(f"🔍 正在获取演员 <code>{html_escape(star_id)}</code> 信息...", parse_mode="HTML")
+    await update.message.reply_text(
+        f"🔍 正在获取演员 <code>{html_escape(star_id)}</code> 信息...",
+        parse_mode="HTML"
+    )
 
     headers = {}
     from config import JAVBUS_AUTH_TOKEN
@@ -314,7 +537,10 @@ async def star_command(update: Update, context: ContextTypes):
         info = await get_star_info(session, star_id)
 
     if not info:
-        await update.message.reply_text(f"❌ 未找到演员 <code>{html_escape(star_id)}</code>", parse_mode="HTML")
+        await update.message.reply_text(
+            f"❌ 未找到演员 <code>{html_escape(star_id)}</code>",
+            parse_mode="HTML"
+        )
         return
 
     lines = [
@@ -338,7 +564,6 @@ async def star_command(update: Update, context: ContextTypes):
     if info.get('hobby'):
         lines.append(f"🎯 爱好: {html_escape(info['hobby'])}")
 
-    # 尝试发送头像
     avatar_url = info.get('avatar', '')
     if avatar_url:
         try:
@@ -363,6 +588,8 @@ async def star_command(update: Update, context: ContextTypes):
     await update.message.reply_text(text, parse_mode="HTML")
 
 
+# ==================== 工具函数 ====================
+
 async def _send_magnet_file(update, context, content, filename, count):
     """发送磁力链接 txt 文件"""
     bytes_io = io.BytesIO(content.encode('utf-8'))
@@ -372,10 +599,29 @@ async def _send_magnet_file(update, context, content, filename, count):
             chat_id=update.message.chat_id,
             document=bytes_io,
             filename=filename,
-            caption=f"✅ 共获取到 {count} 个磁力链接",
+            caption=f"✅ 共收集到 {count} 个磁力链接",
             reply_to_message_id=update.effective_message.message_id
         )
         bytes_io.close()
     except Exception as e:
         logger.error("发送文件失败: %s", e)
         await update.message.reply_text(f"❌ 发送文件失败: {e}")
+
+
+async def _send_magnet_file_by_chat(context, update, chat_id, content, filename, count, reply_to):
+    """通过 chat_id 发送磁力链接 txt 文件（用于回调用）"""
+    bytes_io = io.BytesIO(content.encode('utf-8'))
+    bytes_io.seek(0)
+    try:
+        kwargs = {
+            "chat_id": chat_id,
+            "document": bytes_io,
+            "filename": filename,
+            "caption": f"✅ 共收集到 {count} 个磁力链接",
+        }
+        if reply_to:
+            kwargs["reply_to_message_id"] = reply_to
+        await context.bot.send_document(**kwargs)
+        bytes_io.close()
+    except Exception as e:
+        logger.error("发送文件失败: %s", e)

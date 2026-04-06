@@ -16,19 +16,25 @@ logger = logging.getLogger(__name__)
 
 
 class _RateLimiter:
-    """简单限速器：确保每分钟不超过 N 次请求"""
+    """滑动窗口限速器：允许突发请求，保证每分钟不超过 N 次"""
     def __init__(self, max_per_minute: int):
-        self._interval = 60.0 / max_per_minute
+        self._max = max_per_minute
         self._lock = asyncio.Lock()
-        self._last = 0.0
+        self._timestamps: list[float] = []
 
     async def acquire(self):
         async with self._lock:
             now = time.monotonic()
-            wait = self._interval - (now - self._last)
-            if wait > 0:
-                await asyncio.sleep(wait)
-            self._last = time.monotonic()
+            # 清理超过60秒的记录
+            self._timestamps = [t for t in self._timestamps if now - t < 60]
+            if len(self._timestamps) >= self._max:
+                # 等到最早的请求过期
+                wait = 60.0 - (now - self._timestamps[0]) + 0.1
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                now = time.monotonic()
+                self._timestamps = [t for t in self._timestamps if now - t < 60]
+            self._timestamps.append(time.monotonic())
 
 
 # 全局限速器实例
@@ -199,14 +205,40 @@ async def _fetch_magnet_for_movie(session, movie_id, semaphore):
         }
 
 
-async def get_magnets_for_movie_list(movie_ids):
-    """批量获取影片的最大磁力链接"""
+class _Cancelled(Exception):
+    """任务被取消"""
+    pass
+
+
+async def get_magnets_for_movie_list(movie_ids, progress_callback=None, cancel_event=None):
+    """批量获取影片的最大磁力链接，支持进度回调和取消"""
     semaphore = asyncio.Semaphore(MAX_CONCURRENT)
     headers = _get_headers()
+    total = len(movie_ids)
     results = []
+    completed_count = 0
+
+    async def _fetch_with_progress(session, movie_id):
+        nonlocal completed_count
+        if cancel_event and cancel_event.is_set():
+            return None
+        result = await _fetch_magnet_for_movie(session, movie_id, semaphore)
+        completed_count += 1
+        if cancel_event and cancel_event.is_set():
+            return None
+        if progress_callback and completed_count % max(1, total // 10) == 0:
+            try:
+                await progress_callback(completed_count, total)
+            except Exception:
+                pass
+        return result
+
     async with aiohttp.ClientSession(headers=headers) as session:
-        tasks = [_fetch_magnet_for_movie(session, mid, semaphore) for mid in movie_ids]
+        tasks = [_fetch_with_progress(session, mid) for mid in movie_ids]
         completed = await asyncio.gather(*tasks)
+        # 如果被取消，返回空列表
+        if cancel_event and cancel_event.is_set():
+            return []
         results = [r for r in completed if r is not None]
     return results
 
