@@ -35,11 +35,11 @@ def _check_port_conflict(session, server_id: int, port: int, server_name: str) -
     if port_dup:
         return f"端口 `{port}` 已被代理 `{port_dup.name}` 使用"
 
-    # 2. 检查数据库中同服务器同端口的隧道节点
+    # 2. 检查数据库中同服务器同端口的隧道（通过 TunnelNode 关联）
     from db.models import TunnelNode, Tunnel
     tunnel_node = session.query(TunnelNode).join(Tunnel).filter(
         TunnelNode.server_id == server_id,
-        TunnelNode.port == port
+        Tunnel.port == port
     ).first()
     if tunnel_node:
         return f"端口 `{port}` 已被隧道 `{tunnel_node.tunnel.name}` 使用"
