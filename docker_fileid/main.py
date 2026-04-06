@@ -239,33 +239,47 @@ async def send_file_group(
     # 1. 发送图片+视频（每10个一组）
     for i in range(0, len(photo_video), GROUP_SEND_SIZE):
         batch = photo_video[i:i + GROUP_SEND_SIZE]
-        media_list = []
-        for idx, f in enumerate(batch):
-            file_id = f['telegram_file_id']
-            cap = caption if idx == 0 and not any(m['file_type'] == 'video' for m in batch[:idx]) else ""
+        logger.info("发送图片+视频组: %d 个文件", len(batch))
+
+        if len(batch) == 1:
+            # 单个文件直接发送（send_media_group 要求至少2个）
+            f = batch[0]
             try:
                 if f['file_type'] == 'photo':
-                    media_list.append(InputMediaPhoto(media=file_id, caption=cap[:1024] if cap else ""))
+                    await context.bot.send_photo(chat_id=chat_id, photo=f['telegram_file_id'], caption=caption[:1024] if caption else "")
                 else:
-                    media_list.append(InputMediaVideo(media=file_id, caption=cap[:1024] if cap else ""))
+                    await context.bot.send_video(chat_id=chat_id, video=f['telegram_file_id'], caption=caption[:1024] if caption else "")
+                sent_count += 1
             except Exception as e:
-                logger.error("构建媒体列表失败: %s", e)
-        if media_list:
-            try:
-                await context.bot.send_media_group(chat_id=chat_id, media=media_list)
-                sent_count += len(media_list)
-            except Exception as e:
-                logger.error("发送媒体组失败: %s", e)
-                # 降级逐个发送
-                for f in batch:
-                    try:
-                        if f['file_type'] == 'photo':
-                            await context.bot.send_photo(chat_id=chat_id, photo=f['telegram_file_id'])
-                        else:
-                            await context.bot.send_video(chat_id=chat_id, video=f['telegram_file_id'])
-                        sent_count += 1
-                    except Exception as e2:
-                        logger.error("降级发送失败: %s", e2)
+                logger.error("发送单个媒体失败: %s", e)
+        else:
+            media_list = []
+            for idx, f in enumerate(batch):
+                file_id = f['telegram_file_id']
+                cap = caption if idx == 0 else ""
+                try:
+                    if f['file_type'] == 'photo':
+                        media_list.append(InputMediaPhoto(media=file_id, caption=cap[:1024] if cap else ""))
+                    else:
+                        media_list.append(InputMediaVideo(media=file_id, caption=cap[:1024] if cap else ""))
+                except Exception as e:
+                    logger.error("构建媒体列表失败: %s", e)
+            if media_list:
+                try:
+                    await context.bot.send_media_group(chat_id=chat_id, media=media_list)
+                    sent_count += len(media_list)
+                except Exception as e:
+                    logger.error("发送媒体组失败: %s", e)
+                    # 降级逐个发送
+                    for f in batch:
+                        try:
+                            if f['file_type'] == 'photo':
+                                await context.bot.send_photo(chat_id=chat_id, photo=f['telegram_file_id'])
+                            else:
+                                await context.bot.send_video(chat_id=chat_id, video=f['telegram_file_id'])
+                            sent_count += 1
+                        except Exception as e2:
+                            logger.error("降级发送失败: %s", e2)
 
     # 2. 发送文档（每10个一组）
     for i in range(0, len(documents), GROUP_SEND_SIZE):
@@ -974,15 +988,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
         keyboard = [
             [
-                InlineKeyboardButton("⬇️ 全部发送", callback_data=f"col_send:{col_code}"),
+                InlineKeyboardButton("⬇️ 全部发送", callback_data=f"col_send|{col_code}"),
             ],
             [
-                InlineKeyboardButton("▶️ 自动发送", callback_data=f"col_auto:{col_code}"),
+                InlineKeyboardButton("▶️ 自动发送", callback_data=f"col_auto|{col_code}"),
             ],
         ]
         if total_files > GROUP_SEND_SIZE:
             keyboard.append([
-                InlineKeyboardButton("📖 分页浏览", callback_data=f"col_page:{col_code}:1"),
+                InlineKeyboardButton("📖 分页浏览", callback_data=f"col_page|{col_code}|1"),
             ])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1015,29 +1029,35 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     chat_id = query.message.chat_id
     user_id = query.from_user.id
 
+    logger.info("按钮回调: data=%s, user_id=%s", data, user_id)
     try:
-        if data.startswith("col_send:"):
+        if data.startswith("col_send|"):
             # 全部发送
-            col_code = data.split(":", 1)[1]
+            col_code = data.split("|", 1)[1]
+            logger.info("全部发送: col_code=%s", col_code)
             await _send_collection_all(context, chat_id, col_code, query)
 
-        elif data.startswith("col_auto:"):
+        elif data.startswith("col_auto|"):
             # 自动发送
-            col_code = data.split(":", 1)[1]
+            col_code = data.split("|", 1)[1]
+            logger.info("自动发送: col_code=%s", col_code)
             await _auto_send_collection(context, chat_id, col_code, user_id, query)
 
-        elif data.startswith("col_page:"):
-            # 分页浏览
-            parts = data.split(":")
-            col_code = parts[1]
-            page = int(parts[2]) if len(parts) > 2 else 1
+        elif data.startswith("col_page|"):
+            # 分页浏览: col_page|BotName_col:abc123|2
+            # 用 | 分割，但集合代码中不含 |，所以安全
+            first_pipe = data.index("|", len("col_page|"))
+            col_code = data[len("col_page|"):first_pipe]
+            page = int(data[first_pipe+1:])
+            logger.info("分页浏览: col_code=%s, page=%d", col_code, page)
             await _send_collection_page(context, chat_id, col_code, page, query)
 
-        elif data.startswith("page_send:"):
+        elif data.startswith("page_send|"):
             # 发送本页文件
-            parts = data.split(":")
-            col_code = parts[1]
-            page = int(parts[2]) if len(parts) > 2 else 1
+            first_pipe = data.index("|", len("page_send|"))
+            col_code = data[len("page_send|"):first_pipe]
+            page = int(data[first_pipe+1:])
+            logger.info("发送本页: col_code=%s, page=%d", col_code, page)
             await _send_page_files(context, chat_id, col_code, page, query)
 
         elif data == "stop_auto":
@@ -1261,20 +1281,19 @@ async def _send_collection_page(
     buttons = []
     nav_buttons = []
     if page > 1:
-        nav_buttons.append(InlineKeyboardButton("⬅️ 上一页", callback_data=f"col_page:{col_code}:{page - 1}"))
+        nav_buttons.append(InlineKeyboardButton("⬅️ 上一页", callback_data=f"col_page|{col_code}|{page - 1}"))
     nav_buttons.append(InlineKeyboardButton(f"{page}/{total_pages}", callback_data="noop"))
     if page < total_pages:
-        nav_buttons.append(InlineKeyboardButton("➡️ 下一页", callback_data=f"col_page:{col_code}:{page + 1}"))
+        nav_buttons.append(InlineKeyboardButton("➡️ 下一页", callback_data=f"col_page|{col_code}|{page + 1}"))
     buttons.append(nav_buttons)
 
     # 本页发送按钮
-    page_codes = [f['code'] for f in page_files]
     buttons.append([
-        InlineKeyboardButton("⬇️ 发送本页文件", callback_data=f"page_send:{col_code}:{page}"),
+        InlineKeyboardButton("⬇️ 发送本页文件", callback_data=f"page_send|{col_code}|{page}"),
     ])
     buttons.append([
-        InlineKeyboardButton("⬇️ 全部发送", callback_data=f"col_send:{col_code}"),
-        InlineKeyboardButton("▶️ 自动发送", callback_data=f"col_auto:{col_code}"),
+        InlineKeyboardButton("⬇️ 全部发送", callback_data=f"col_send|{col_code}"),
+        InlineKeyboardButton("▶️ 自动发送", callback_data=f"col_auto|{col_code}"),
     ])
 
     reply_markup = InlineKeyboardMarkup(buttons)
