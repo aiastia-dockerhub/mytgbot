@@ -13,6 +13,14 @@ from senders import send_file_group
 logger = logging.getLogger(__name__)
 
 
+def _resolve_key(context, sk: str) -> str:
+    """从短 key 映射回集合代码"""
+    cb_map = context.bot_data.get('cb_map', {})
+    col_code = cb_map.get(sk, '')
+    logger.info("_resolve_key: sk=%s, found=%s, map_keys=%s", sk, bool(col_code), list(cb_map.keys()))
+    return col_code
+
+
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """处理内联按钮回调"""
     query = update.callback_query
@@ -20,24 +28,59 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     chat_id = query.from_user.id
     user_id = query.from_user.id
 
-    logger.info("========== 按钮回调开始 ==========")
-    logger.info("data=%s, user_id=%s, chat_id=%s", data, user_id, chat_id)
+    logger.info("========== 按钮回调 ==========")
+    logger.info("data=%s (len=%d), user_id=%s", data, len(data), user_id)
 
     try:
         await query.answer()
-        logger.info("query.answer() 成功")
     except Exception as e:
         logger.error("query.answer() 失败: %s", e)
 
     try:
-        if data.startswith("col_send|"):
+        # 短格式: s|key, a|key, p|key|page
+        if data.startswith("s|") or data.startswith("a|") or data.startswith("p|"):
+            action = data[0]
+            rest = data[2:]
+
+            if action == 's':
+                # 全部发送: s|key
+                sk = rest
+                col_code = _resolve_key(context, sk)
+                if not col_code:
+                    await context.bot.send_message(chat_id=chat_id, text="⚠️ 按钮已过期，请重新发送集合代码。")
+                    return
+                await _send_all(context, chat_id, col_code, query)
+
+            elif action == 'a':
+                # 自动发送: a|key
+                sk = rest
+                col_code = _resolve_key(context, sk)
+                if not col_code:
+                    await context.bot.send_message(chat_id=chat_id, text="⚠️ 按钮已过期，请重新发送集合代码。")
+                    return
+                await _auto_send(context, chat_id, col_code, user_id, query)
+
+            elif action == 'p':
+                # 分页: p|key|page
+                parts = rest.split("|")
+                if len(parts) < 2:
+                    await context.bot.send_message(chat_id=chat_id, text="⚠️ 数据格式错误。")
+                    return
+                sk = parts[0]
+                page = int(parts[1])
+                col_code = _resolve_key(context, sk)
+                if not col_code:
+                    await context.bot.send_message(chat_id=chat_id, text="⚠️ 按钮已过期，请重新发送集合代码。")
+                    return
+                await _send_page(context, chat_id, col_code, page, query)
+
+        # 旧格式兼容: col_send|code, col_auto|code, col_page|code|page, page_send|code|page
+        elif data.startswith("col_send|"):
             col_code = data.split("|", 1)[1]
-            logger.info("全部发送: col_code=%s", col_code)
             await _send_all(context, chat_id, col_code, query)
 
         elif data.startswith("col_auto|"):
             col_code = data.split("|", 1)[1]
-            logger.info("自动发送: col_code=%s", col_code)
             await _auto_send(context, chat_id, col_code, user_id, query)
 
         elif data.startswith("col_page|"):
@@ -80,7 +123,6 @@ async def _send_all(context, chat_id, col_code, query=None):
     """发送集合全部文件"""
     logger.info("_send_all: col_code=%s", col_code)
 
-    # 先发一条确认消息（确保用户能看到反馈）
     status_msg = await context.bot.send_message(chat_id=chat_id, text="📤 正在准备发送...")
 
     files = get_collection_files(col_code)
@@ -91,12 +133,6 @@ async def _send_all(context, chat_id, col_code, query=None):
         return
 
     total = len(files)
-
-    # 打印文件详情
-    for f in files:
-        logger.info("  文件: type=%s, file_id=%s (len=%d)",
-                     f.get('file_type'), str(f.get('telegram_file_id', ''))[:40],
-                     len(str(f.get('telegram_file_id', ''))))
 
     pv = [f for f in files if f['file_type'] in ('photo', 'video')]
     docs = [f for f in files if f['file_type'] == 'document']
@@ -220,18 +256,30 @@ async def _send_page(context, chat_id, col_code, page, query=None):
         size_text = f"{size_mb:.1f}MB" if size_mb >= 1 else f"{f['file_size'] / 1024:.0f}KB" if f['file_size'] else "未知"
         text += f"{i}. {type_name} ({size_text})\n"
 
+    # 获取短 key
+    sk = None
+    cb_map = context.bot_data.get('cb_map', {})
+    for k, v in cb_map.items():
+        if v == col_code:
+            sk = k
+            break
+    if not sk:
+        # 如果找不到映射，重新创建
+        from handlers_messages import _short_key
+        sk = _short_key(context, col_code)
+
     buttons = []
     nav = []
     if page > 1:
-        nav.append(InlineKeyboardButton("⬅️ 上一页", callback_data=f"col_page|{col_code}|{page - 1}"))
+        nav.append(InlineKeyboardButton("⬅️ 上一页", callback_data=f"p|{sk}|{page - 1}"))
     nav.append(InlineKeyboardButton(f"{page}/{total_pages}", callback_data="noop"))
     if page < total_pages:
-        nav.append(InlineKeyboardButton("➡️ 下一页", callback_data=f"col_page|{col_code}|{page + 1}"))
+        nav.append(InlineKeyboardButton("➡️ 下一页", callback_data=f"p|{sk}|{page + 1}"))
     buttons.append(nav)
     buttons.append([InlineKeyboardButton("⬇️ 发送本页文件", callback_data=f"page_send|{col_code}|{page}")])
     buttons.append([
-        InlineKeyboardButton("⬇️ 全部发送", callback_data=f"col_send|{col_code}"),
-        InlineKeyboardButton("▶️ 自动发送", callback_data=f"col_auto|{col_code}"),
+        InlineKeyboardButton("⬇️ 全部发送", callback_data=f"s|{sk}"),
+        InlineKeyboardButton("▶️ 自动发送", callback_data=f"a|{sk}"),
     ])
 
     reply_markup = InlineKeyboardMarkup(buttons)

@@ -13,6 +13,21 @@ from database import save_file, get_file, get_collection, get_collection_files, 
 from utils import get_code_prefix, escape_markdown, generate_raw_code, parse_file_code, parse_collection_code
 from senders import send_file_group
 
+
+def _short_key(context, col_code: str) -> str:
+    """生成短 key 用于 callback_data（Telegram 限制 64 字节）"""
+    if 'cb_map' not in context.bot_data:
+        context.bot_data['cb_map'] = {}
+    # 如果已存在映射，复用
+    for k, v in context.bot_data['cb_map'].items():
+        if v == col_code:
+            return k
+    # 新建映射: s0, s1, s2 ...
+    idx = len(context.bot_data['cb_map'])
+    key = f"s{idx}"
+    context.bot_data['cb_map'][key] = col_code
+    return key
+
 logger = logging.getLogger(__name__)
 
 
@@ -123,13 +138,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             type_counts[f['file_type']] = type_counts.get(f['file_type'], 0) + 1
         type_stats_text = " ".join(f"{FILE_TYPE_MAP.get(k, k)}x{v}" for k, v in type_counts.items())
 
+        sk = _short_key(context, col_code)
         col_text = f"📦 *集合「{safe_name}」*\n\n📊 共 {total_files} 个文件\n📋 {type_stats_text}\n\n请选择操作："
         keyboard = [
-            [InlineKeyboardButton("⬇️ 全部发送", callback_data=f"col_send|{col_code}")],
-            [InlineKeyboardButton("▶️ 自动发送", callback_data=f"col_auto|{col_code}")],
+            [InlineKeyboardButton("⬇️ 全部发送", callback_data=f"s|{sk}")],
+            [InlineKeyboardButton("▶️ 自动发送", callback_data=f"a|{sk}")],
         ]
         if total_files > GROUP_SEND_SIZE:
-            keyboard.append([InlineKeyboardButton("📖 分页浏览", callback_data=f"col_page|{col_code}|1")])
+            keyboard.append([InlineKeyboardButton("📖 分页浏览", callback_data=f"p|{sk}|1")])
 
         await message.reply_text(col_text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -285,7 +301,8 @@ async def handle_forwarded_media(update: Update, context: ContextTypes.DEFAULT_T
             safe_name = escape_markdown(col_name)
             reply = f"✅ 转发媒体组已保存并自动创建集合！\n\n📦 集合: *{safe_name}*\n📊 共 {len(codes)} 个文件\n📦 集合代码: `{full_col_code}`\n\n单个文件代码：\n"
             reply += "\n".join(f"`{c}`" for c in codes)
-            keyboard = [[InlineKeyboardButton("⬇️ 全部发送", callback_data=f"col_send|{full_col_code}"), InlineKeyboardButton("▶️ 自动发送", callback_data=f"col_auto|{full_col_code}")]]
+            sk = _short_key(context, full_col_code)
+            keyboard = [[InlineKeyboardButton("⬇️ 全部发送", callback_data=f"s|{sk}"), InlineKeyboardButton("▶️ 自动发送", callback_data=f"a|{sk}")]]
             try:
                 await msgs[0].reply_text(reply, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
             except Exception:
