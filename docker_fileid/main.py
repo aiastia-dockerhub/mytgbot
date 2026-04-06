@@ -17,18 +17,45 @@ from handlers_messages import (
 )
 from handlers_callbacks import button_callback
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+    ]
+)
+# 降低 httpx 和 telegram.ext 日志级别，避免刷屏
+logging.getLogger('httpx').setLevel(logging.WARNING)
+logging.getLogger('telegram.ext').setLevel(logging.INFO)
+logging.getLogger('telegram').setLevel(logging.INFO)
+
 logger = logging.getLogger(__name__)
 
 
 async def error_handler(update: object, context):
     """全局错误处理"""
-    logger.error("异常发生:", exc_info=context.error)
+    logger.error("===== 全局错误处理器触发 =====")
+    logger.error("错误类型: %s", type(context.error).__name__ if context.error else "Unknown")
+    logger.error("错误详情: %s", context.error, exc_info=True)
+
+    # 记录 update 信息
+    if update:
+        if hasattr(update, 'callback_query') and update.callback_query:
+            cq = update.callback_query
+            logger.error("来自回调: data=%s, user=%s, chat=%s",
+                         cq.data,
+                         cq.from_user.id if cq.from_user else None,
+                         cq.message.chat_id if cq.message else None)
+        elif hasattr(update, 'effective_message') and update.effective_message:
+            logger.error("来自消息: chat_id=%s, text=%s",
+                         update.effective_message.chat_id,
+                         (update.effective_message.text or '')[:100])
+
     if update and hasattr(update, 'effective_message') and update.effective_message:
         try:
             await update.effective_message.reply_text("❌ 处理请求时发生内部错误，请稍后重试。")
-        except Exception:
-            pass
+        except Exception as e2:
+            logger.error("全局错误处理: 发送错误提示也失败: %s", e2)
 
 
 async def post_init(application):
