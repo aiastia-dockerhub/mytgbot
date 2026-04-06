@@ -89,6 +89,50 @@ async def create_proxy(update: Update, context: CallbackContext):
             await update.message.reply_text(f"❌ 服务器 `{server.name}` 上已存在代理 `{proxy_name}`", parse_mode='Markdown')
             return
 
+        # ======== 端口冲突检查 ========
+        # 1. 检查数据库中同服务器同端口的代理
+        port_duplicate = session.query(Proxy).filter(
+            Proxy.server_id == server.id,
+            Proxy.listen_port == port
+        ).first()
+        if port_duplicate:
+            await update.message.reply_text(
+                f"❌ 端口冲突！服务器 `{server.name}` 端口 `{port}` 已被代理 `{port_duplicate.name}` 使用",
+                parse_mode='Markdown'
+            )
+            return
+
+        # 2. 检查数据库中同服务器同端口的隧道节点
+        from db.models import TunnelNode, Tunnel
+        tunnel_node = session.query(TunnelNode).join(Tunnel).filter(
+            TunnelNode.server_id == server.id,
+            Tunnel.port == port
+        ).first()
+        if tunnel_node:
+            await update.message.reply_text(
+                f"❌ 端口冲突！服务器 `{server.name}` 端口 `{port}` 已被隧道 `{tunnel_node.tunnel.name}` 使用",
+                parse_mode='Markdown'
+            )
+            return
+
+        # 3. 通过 API 检查远程服务器上已存在的服务
+        client = get_server_api_client(server)
+        ok, existing_services = await client.get_services()
+        if ok and existing_services:
+            svc_list = existing_services if isinstance(existing_services, list) else [existing_services]
+            for svc in svc_list:
+                svc_addr = svc.get('addr', '')
+                svc_port = svc_addr.strip(':').split(':')[-1]
+                try:
+                    if int(svc_port) == port:
+                        await update.message.reply_text(
+                            f"❌ 端口冲突！服务器 `{server.name}` 端口 `{port}` 已被远程服务 `{svc.get('name', 'unknown')}` 占用",
+                            parse_mode='Markdown'
+                        )
+                        return
+                except ValueError:
+                    pass
+
         # 通过 API 创建代理
         client = get_server_api_client(server)
         success, data = await client.create_proxy_service(

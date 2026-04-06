@@ -101,11 +101,56 @@ async def create_tunnel(update: Update, context: CallbackContext):
     # 开始创建隧道
     await update.message.reply_text(f"⏳ 正在创建隧道 *{tunnel_name}*...", parse_mode='Markdown')
 
+    # ======== Step 1: 端口冲突检查 ========
+    port_conflicts = []
+    with session_scope() as session:
+        for server in servers:
+            srv = session.query(Server).filter(Server.id == server.id).first()
+            client = get_server_api_client(srv)
+            ok, existing_services = await client.get_services()
+            if ok and existing_services:
+                if isinstance(existing_services, list):
+                    for svc in existing_services:
+                        svc_addr = svc.get('addr', '')
+                        # 解析端口
+                        svc_port = svc_addr.strip(':').split(':')[-1]
+                        try:
+                            if int(svc_port) == port:
+                                port_conflicts.append(
+                                    f"服务器 {srv.name}({srv.ip}) 端口 {port} 已被服务 `{svc.get('name', 'unknown')}` 占用"
+                                )
+                        except ValueError:
+                            pass
+                elif isinstance(existing_services, dict) and 'addr' in str(existing_services):
+                    # 单个服务的情况
+                    pass
+
+            # 同时检查数据库中的代理端口
+            from db.models import Proxy
+            proxies = session.query(Proxy).filter(
+                Proxy.server_id == srv.id,
+                Proxy.listen_port == port
+            ).all()
+            for p in proxies:
+                port_conflicts.append(
+                    f"服务器 {srv.name}({srv.ip}) 端口 {port} 已被代理 `{p.name}` 占用"
+                )
+
+    if port_conflicts:
+        await update.message.reply_text(
+            f"❌ 端口冲突！以下服务已在使用端口 `{port}`：\n\n"
+            + "\n".join([f"  ⚠️ {c}" for c in port_conflicts])
+            + "\n\n请更换端口后重试。",
+            parse_mode='Markdown'
+        )
+        return
+
     results = []
     errors = []
+    created_service_names = []  # 记录已创建的服务，用于失败回滚
 
     with session_scope() as session:
-        # 创建隧道记录
+        # ======== Step 2: 创建数据库记录 ========
         tunnel = Tunnel(
             name=tunnel_name,
             protocol=protocol,
@@ -116,9 +161,8 @@ async def create_tunnel(update: Update, context: CallbackContext):
         session.flush()
         tunnel_id = tunnel.id
 
-        # 按顺序创建节点
+        # 按顺序创建节点记录
         for i, server in enumerate(servers):
-            # 重新加载 server 对象
             srv = session.query(Server).filter(Server.id == server.id).first()
 
             if i == 0:
@@ -145,24 +189,23 @@ async def create_tunnel(update: Update, context: CallbackContext):
                 'server_ip': srv.ip,
                 'role': role,
                 'service_name': service_name,
-                'server': srv,
+                'server_id': srv.id,
             })
 
         session.flush()
 
-        # 通过 API 在每台服务器上创建 gost 服务
-        for i, r in enumerate(results):
-            srv = session.query(Server).filter(Server.id == r['server'].id).first()
+        # ======== Step 3: 按出口→入口顺序创建 gost 服务 ========
+        # 先创建出口（无下游依赖），再创建中转，最后创建入口
+        for i in range(len(results) - 1, -1, -1):
+            r = results[i]
+            srv = session.query(Server).filter(Server.id == r['server_id']).first()
             client = get_server_api_client(srv)
 
-            if r['role'] == 'entry':
-                # 入口：监听端口 → 转发到下一跳
-                next_server = results[i + 1]
-                next_hop = f"{next_server['server_ip']}:{port}"
-                success, data = await client.create_tunnel_entry(
+            if r['role'] == 'exit':
+                # 出口：仅监听端口
+                success, data = await client.create_tunnel_exit(
                     service_name=r['service_name'],
                     port=port,
-                    next_hop_addr=next_hop,
                     protocol=protocol
                 )
             elif r['role'] == 'relay':
@@ -176,18 +219,33 @@ async def create_tunnel(update: Update, context: CallbackContext):
                     protocol=protocol
                 )
             else:
-                # 出口：仅监听端口
-                success, data = await client.create_tunnel_exit(
+                # 入口：监听端口 → 转发到下一跳
+                next_server = results[i + 1]
+                next_hop = f"{next_server['server_ip']}:{port}"
+                success, data = await client.create_tunnel_entry(
                     service_name=r['service_name'],
                     port=port,
+                    next_hop_addr=next_hop,
                     protocol=protocol
                 )
 
             if success:
                 r['status'] = '✅'
+                created_service_names.append((r['server_id'], r['service_name']))
             else:
                 r['status'] = f'❌ {data}'
                 errors.append(f"节点{i} ({srv.name}): {data}")
+
+                # ======== 失败回滚：删除已创建的服务 ========
+                if created_service_names:
+                    for srv_id, svc_name in created_service_names:
+                        rollback_srv = session.query(Server).filter(Server.id == srv_id).first()
+                        if rollback_srv:
+                            rollback_client = get_server_api_client(rollback_srv)
+                            await rollback_client.delete_service(svc_name)
+                            logger.info(f"Rollback: deleted service {svc_name} on {rollback_srv.name}")
+
+                break  # 创建失败，停止继续创建
 
         # 如果全部成功，标记为活跃
         if not errors:
@@ -320,7 +378,11 @@ async def start_tunnel(update: Update, context: CallbackContext):
         await update.message.reply_text(f"⏳ 正在启动隧道 *{tunnel.name}*...", parse_mode='Markdown')
 
         errors = []
-        for i, node in enumerate(nodes):
+        created_services = []  # 记录启动时已创建的服务，用于回滚
+
+        # 按出口→入口顺序启动（先启动下游，再启动上游）
+        for i in range(len(nodes) - 1, -1, -1):
+            node = nodes[i]
             server = node.server
             client = get_server_api_client(server)
 
@@ -328,15 +390,17 @@ async def start_tunnel(update: Update, context: CallbackContext):
             conn_ok, _ = await client.test_connection()
             if not conn_ok:
                 errors.append(f"节点{i} ({server.name}): 无法连接")
-                continue
+                # 回滚已启动的服务
+                for srv_id, svc_name in created_services:
+                    rb_srv = session.query(Server).filter(Server.id == srv_id).first()
+                    if rb_srv:
+                        await get_server_api_client(rb_srv).delete_service(svc_name)
+                break
 
-            if node.role == 'entry':
-                next_server = nodes[i + 1].server
-                next_hop = f"{next_server.ip}:{tunnel.port}"
-                success, data = await client.create_tunnel_entry(
+            if node.role == 'exit':
+                success, data = await client.create_tunnel_exit(
                     service_name=node.gost_service_name,
                     port=tunnel.port,
-                    next_hop_addr=next_hop,
                     protocol=tunnel.protocol
                 )
             elif node.role == 'relay':
@@ -348,15 +412,26 @@ async def start_tunnel(update: Update, context: CallbackContext):
                     next_hop_addr=next_hop,
                     protocol=tunnel.protocol
                 )
-            else:  # exit
-                success, data = await client.create_tunnel_exit(
+            else:  # entry
+                next_server = nodes[i + 1].server
+                next_hop = f"{next_server.ip}:{tunnel.port}"
+                success, data = await client.create_tunnel_entry(
                     service_name=node.gost_service_name,
                     port=tunnel.port,
+                    next_hop_addr=next_hop,
                     protocol=tunnel.protocol
                 )
 
             if not success:
                 errors.append(f"节点{i} ({server.name}): {data}")
+                # 回滚已启动的服务
+                for srv_id, svc_name in created_services:
+                    rb_srv = session.query(Server).filter(Server.id == srv_id).first()
+                    if rb_srv:
+                        await get_server_api_client(rb_srv).delete_service(svc_name)
+                break
+            else:
+                created_services.append((server.id, node.gost_service_name))
 
         if not errors:
             tunnel.is_active = True
@@ -398,7 +473,8 @@ async def stop_tunnel(update: Update, context: CallbackContext):
         nodes = tunnel.nodes
         errors = []
 
-        for node in nodes:
+        # 按入口→出口顺序停止（先切断流量入口，再逐级停止下游）
+        for node in nodes:  # nodes 已按 node_order 排序，即 entry→relay→exit
             server = node.server
             client = get_server_api_client(server)
             success, data = await client.delete_service(node.gost_service_name)
@@ -437,13 +513,14 @@ async def del_tunnel(update: Update, context: CallbackContext):
             await update.message.reply_text(f"❌ 未找到隧道 `{identifier}`", parse_mode='Markdown')
             return
 
-        # 先尝试清理远程服务
-        nodes = tunnel.nodes
+        # 先删除 gost 远程服务（入口→出口顺序，先断流量入口）
+        nodes = tunnel.nodes  # 已按 node_order 排序: entry→relay→exit
         for node in nodes:
             server = node.server
             client = get_server_api_client(server)
             await client.delete_service(node.gost_service_name)
 
+        # 再删除数据库记录（cascade 会自动删除 tunnel_nodes）
         name = tunnel.name
         session.delete(tunnel)
 
