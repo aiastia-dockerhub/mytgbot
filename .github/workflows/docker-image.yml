@@ -31,6 +31,9 @@ jobs:
           - context: ./docker_top
             file: ./docker_top/Dockerfile
             tag: top
+          - context: ./docker_tunnel
+            file: ./docker_tunnel/Dockerfile
+            tag: tunnel
     steps:
       - name: Checkout
         uses: actions/checkout@v3

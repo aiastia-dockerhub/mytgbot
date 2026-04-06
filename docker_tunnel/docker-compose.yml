@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  tg-tunnel:
+    build: .
+    image: aiastia/mytgbot:tunnel
+    volumes:
+      - ./data:/app/data/
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+      - BOT_TOKEN=${BOT_TOKEN}
+      - ADMIN_IDS=${ADMIN_IDS}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
