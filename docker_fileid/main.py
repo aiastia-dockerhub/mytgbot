@@ -1458,6 +1458,28 @@ async def handle_group_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await handle_attachment(update, context)
 
 
+async def handle_forwarded_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """处理转发的媒体消息（包括单个和批量转发）"""
+    message = update.message
+    if not message:
+        return
+
+    # 转发的媒体消息直接用附件处理
+    if message.document or message.photo or message.video or message.audio or message.voice:
+        # 如果有 media_group_id，走媒体组收集逻辑
+        if message.media_group_id:
+            # 复用 handle_group_media 的收集逻辑
+            await handle_group_media(update, context)
+        else:
+            await handle_attachment(update, context)
+    elif message.text:
+        await handle_text(update, context)
+    else:
+        await message.reply_text(
+            "请转发包含媒体（图片/视频/音频/文档）的消息，我会返回其代码。"
+        )
+
+
 # ==================== 错误处理 ====================
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1531,16 +1553,22 @@ def main():
     application.add_handler(CommandHandler("stats", stats_command))
     application.add_handler(CommandHandler("export", export_command))
 
-    # 媒体组处理（优先级最高，捕获 media_group_id）
+    # 转发的媒体消息（优先级最高，在普通媒体处理器之前）
+    application.add_handler(MessageHandler(
+        filters.FORWARDED & (filters.PHOTO | filters.VIDEO | filters.Document.ALL | filters.AUDIO | filters.VOICE),
+        handle_forwarded_media
+    ))
+
+    # 转发的非媒体消息
+    application.add_handler(MessageHandler(
+        filters.FORWARDED & filters.TEXT & ~filters.COMMAND,
+        handle_forward
+    ))
+
+    # 媒体组处理（捕获 media_group_id，仅处理非转发的媒体）
     application.add_handler(MessageHandler(
         filters.PHOTO | filters.VIDEO | filters.Document.ALL | filters.AUDIO | filters.VOICE,
         handle_group_media
-    ))
-
-    # 转发消息
-    application.add_handler(MessageHandler(
-        filters.FORWARDED & ~filters.COMMAND,
-        handle_forward
     ))
 
     # 文本消息（代码解析）
