@@ -3,7 +3,7 @@ version: '3.8'
 services:
   fileid-bot:
     build: .
-    image: aiastia/fileid-bot:latest
+    image: aiastia/mytgbot:fileid
     volumes:
       - ./data:/app/data/
     restart: unless-stopped

@@ -34,7 +34,6 @@ jobs:
           images: aiastia/mytgbot
           tags: |
             type=raw,value=fileid
-            type=raw,value=fileid-{{sha}}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
