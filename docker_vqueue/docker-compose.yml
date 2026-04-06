@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  vqueue-bot:
+    build: .
+    image: aiastia/mytgbot:vqueue
+    volumes:
+      - ./data:/app/data/
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+      - BOT_TOKEN=${BOT_TOKEN}
+      - ADMIN_IDS=${ADMIN_IDS:-}
+      - PROTECT_CONTENT=${PROTECT_CONTENT:-true}
+      - SHOW_SOURCE=${SHOW_SOURCE:-true}
+      - SEND_INTERVAL=${SEND_INTERVAL:-3}
+      - VIDEO_INTERVAL=${VIDEO_INTERVAL:-10}
+      - QUEUE_CHECK_INTERVAL=${QUEUE_CHECK_INTERVAL:-5}
+      - ACTIVE_CHECK_INTERVAL=${ACTIVE_CHECK_INTERVAL:-3600}
+      - MIN_VIDEOS_24H=${MIN_VIDEOS_24H:-10}
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
