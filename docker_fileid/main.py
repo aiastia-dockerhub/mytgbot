@@ -24,8 +24,9 @@ logging.basicConfig(
         logging.StreamHandler(),
     ]
 )
-# 降低 httpx 和 telegram.ext 日志级别，避免刷屏
+# 降低 httpx/httpcore 和 telegram.ext 日志级别，避免刷屏
 logging.getLogger('httpx').setLevel(logging.WARNING)
+logging.getLogger('httpcore').setLevel(logging.WARNING)
 logging.getLogger('telegram.ext').setLevel(logging.INFO)
 logging.getLogger('telegram').setLevel(logging.INFO)
 
