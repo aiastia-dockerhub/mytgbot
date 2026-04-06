@@ -1,6 +1,7 @@
 """FileID Bot - 入口文件"""
 import logging
 
+from telegram import Update
 from telegram.ext import Application, ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 
 from config import BOT_TOKEN
@@ -131,7 +132,7 @@ def main():
     application.add_error_handler(error_handler)
 
     logger.info("FileID Bot 已启动，开始轮询消息...")
-    application.run_polling(drop_pending_updates=True)
+    application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
 if __name__ == '__main__':
