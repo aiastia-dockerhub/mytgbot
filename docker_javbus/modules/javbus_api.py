@@ -4,13 +4,35 @@ JavBus API 客户端封装
 """
 import asyncio
 import logging
+import time
 import aiohttp
 from config import (
     JAVBUS_API_URL, JAVBUS_AUTH_TOKEN, DEFAULT_TYPE,
-    MAGNET_SORT_BY, MAGNET_SORT_ORDER, MAX_CONCURRENT, MAX_PAGES
+    MAGNET_SORT_BY, MAGNET_SORT_ORDER, MAX_CONCURRENT, MAX_PAGES,
+    RATE_LIMIT
 )
 
 logger = logging.getLogger(__name__)
+
+
+class _RateLimiter:
+    """简单限速器：确保每分钟不超过 N 次请求"""
+    def __init__(self, max_per_minute: int):
+        self._interval = 60.0 / max_per_minute
+        self._lock = asyncio.Lock()
+        self._last = 0.0
+
+    async def acquire(self):
+        async with self._lock:
+            now = time.monotonic()
+            wait = self._interval - (now - self._last)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            self._last = time.monotonic()
+
+
+# 全局限速器实例
+_rate_limiter = _RateLimiter(RATE_LIMIT)
 
 
 def _get_headers():
@@ -23,6 +45,7 @@ def _get_headers():
 
 async def get_movie_detail(session, movie_id):
     """获取影片详情 /api/movies/{movieId}"""
+    await _rate_limiter.acquire()
     url = f"{JAVBUS_API_URL}/api/movies/{movie_id}"
     try:
         async with session.get(url) as resp:
@@ -37,6 +60,7 @@ async def get_movie_detail(session, movie_id):
 
 async def get_magnets(session, movie_id, gid, uc):
     """获取影片磁力链接 /api/magnets/{movieId}"""
+    await _rate_limiter.acquire()
     url = f"{JAVBUS_API_URL}/api/magnets/{movie_id}"
     params = {"gid": gid, "uc": uc}
     if MAGNET_SORT_BY:
@@ -56,6 +80,7 @@ async def get_magnets(session, movie_id, gid, uc):
 
 async def get_star_info(session, star_id):
     """获取演员详情 /api/stars/{starId}"""
+    await _rate_limiter.acquire()
     url = f"{JAVBUS_API_URL}/api/stars/{star_id}"
     params = {}
     if DEFAULT_TYPE:
@@ -73,6 +98,7 @@ async def get_star_info(session, star_id):
 
 async def _get_movie_ids_page(session, params, page):
     """获取单页影片列表，返回 (movie_ids, has_next_page)"""
+    await _rate_limiter.acquire()
     params = {**params, "page": str(page)}
     url = f"{JAVBUS_API_URL}/api/movies"
     try:
@@ -91,6 +117,7 @@ async def _get_movie_ids_page(session, params, page):
 
 async def _search_movie_ids_page(session, keyword, page):
     """搜索影片单页，返回 (movie_ids, has_next_page)"""
+    await _rate_limiter.acquire()
     url = f"{JAVBUS_API_URL}/api/movies/search"
     params = {"keyword": keyword, "page": str(page), "magnet": "exist"}
     if DEFAULT_TYPE:

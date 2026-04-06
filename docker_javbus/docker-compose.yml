@@ -14,6 +14,7 @@ services:
       - MAGNET_SORT_ORDER=${MAGNET_SORT_ORDER:-desc}
       - MAX_CONCURRENT=${MAX_CONCURRENT:-10}
       - MAX_PAGES=${MAX_PAGES:-20}
+      - RATE_LIMIT=${RATE_LIMIT:-3}
     logging:
       options:
         max-size: "10m"

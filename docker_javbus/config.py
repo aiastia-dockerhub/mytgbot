@@ -41,4 +41,7 @@ MAX_CONCURRENT = int(os.environ.get('MAX_CONCURRENT', '10'))
 # 单次搜索最大页数（防止一次拉太多）
 MAX_PAGES = int(os.environ.get('MAX_PAGES', '20'))
 
+# API 请求限速：每分钟最大请求数（防止 429）
+RATE_LIMIT = int(os.environ.get('RATE_LIMIT', '3'))
+
 logger.info(f"Config loaded. ADMIN_IDS: {ADMIN_IDS}, API: {JAVBUS_API_URL}")

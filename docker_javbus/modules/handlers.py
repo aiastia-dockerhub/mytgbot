@@ -135,8 +135,8 @@ async def jav_star_command(update: Update, context: ContextTypes):
         await update.message.reply_text("❌ 未能获取到磁力链接")
         return
 
-    # 生成 txt 文件
-    lines = [f"{r['id']} | {r['size']} | {r['link']}" for r in results]
+    # 生成 txt 文件（只保留 magnet 链接）
+    lines = [r['link'] for r in results if r.get('link')]
     content = "\n".join(lines)
     await _send_magnet_file(update, context, content, f"star_{star_id}.txt", len(results))
 
@@ -180,7 +180,7 @@ async def jav_filter_command(update: Update, context: ContextTypes):
         await update.message.reply_text("❌ 未能获取到磁力链接")
         return
 
-    lines = [f"{r['id']} | {r['size']} | {r['link']}" for r in results]
+    lines = [r['link'] for r in results if r.get('link')]
     content = "\n".join(lines)
     await _send_magnet_file(update, context, content, f"{filter_type}_{filter_value}.txt", len(results))
 
@@ -211,7 +211,7 @@ async def jav_search_command(update: Update, context: ContextTypes):
         await update.message.reply_text("❌ 未能获取到磁力链接")
         return
 
-    lines = [f"{r['id']} | {r['size']} | {r['link']}" for r in results]
+    lines = [r['link'] for r in results if r.get('link')]
     content = "\n".join(lines)
     await _send_magnet_file(update, context, content, f"search_{keyword}.txt", len(results))
 
