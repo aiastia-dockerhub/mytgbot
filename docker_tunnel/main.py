@@ -23,7 +23,7 @@ from modules.server_handlers import (
     add_server, verify_server, list_servers, server_info, del_server, check_server, cancel_server
 )
 from modules.proxy_handlers import (
-    create_proxy, list_proxies, del_proxy, start_proxy, stop_proxy
+    create_proxy, list_proxies, del_proxy, start_proxy, stop_proxy, move_proxy
 )
 from modules.tunnel_handlers import (
     create_tunnel, list_tunnels, tunnel_status, start_tunnel, stop_tunnel, del_tunnel
@@ -52,12 +52,14 @@ async def help_command(update: Update, context: CallbackContext):
         "`/cancel_server <名称>` — 取消添加（输错时使用）\n"
         "`/check_server <名称>` — 检查服务器状态\n\n"
         "📡 *代理/转发管理:*\n"
-        "`/create_proxy <名称> <服务器> <目标IP:端口> [本地端口] [tcp|udp]` — 端口转发\n"
-        "`/create_proxy <名称> <服务器> <协议> [端口]` — 创建代理服务\n"
+        "`/create_proxy [名称] [服务器] <目标IP:端口> [本地端口] [tcp|udp]` — 端口转发\n"
+        "`/create_proxy [名称] [服务器] <协议> [端口]` — 创建代理服务\n"
+        "💡 名称/服务器可省略，自动选择\n"
         "`/list_proxies` — 列出所有代理/转发\n"
         "`/start_proxy <名称>` — 启动\n"
         "`/stop_proxy <名称>` — 停止\n"
-        "`/del_proxy <名称>` — 删除\n\n"
+        "`/del_proxy <名称>` — 删除\n"
+        "`/move_proxy <名称> <新服务器>` — 迁移到其他服务器\n\n"
         "🔗 *隧道管理（多服务器链路）:*\n"
         "`/create_tunnel <名称> <协议> <端口> <服务器1> <服务器2> ...` — 创建隧道\n"
         "`/list_tunnels` — 列出所有隧道\n"
@@ -126,6 +128,7 @@ def main():
     application.add_handler(CommandHandler("start_proxy", start_proxy))
     application.add_handler(CommandHandler("stop_proxy", stop_proxy))
     application.add_handler(CommandHandler("del_proxy", del_proxy))
+    application.add_handler(CommandHandler("move_proxy", move_proxy))
 
     # 隧道管理
     application.add_handler(CommandHandler("create_tunnel", create_tunnel))
