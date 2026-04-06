@@ -344,6 +344,14 @@ def get_code_prefix(bot_username: str) -> str:
     return CODE_PREFIX if CODE_PREFIX else bot_username
 
 
+def escape_markdown(text: str) -> str:
+    """转义 Markdown 特殊字符（用于用户输入的内容）"""
+    # Markdown 模式需要转义的字符: _ * ` [ 
+    for char in ['_', '*', '`', '[']:
+        text = text.replace(char, f'\\{char}')
+    return text
+
+
 def save_file_to_db(user_id: int, file_type: str, file_id: str,
                     file_size: int, file_unique_id: str, bot_username: str) -> Optional[str]:
     """保存文件到数据库，返回代码"""
@@ -502,8 +510,9 @@ async def create_collection(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         context.user_data['creating_collection'] = full_code
         context.user_data['collection_count'] = 0
 
+        safe_name = escape_markdown(name)
         await update.message.reply_text(
-            f"✅ 集合「{name}」创建成功！\n\n"
+            f"✅ 集合「{safe_name}」创建成功！\n\n"
             f"📦 代码: `{full_code}`\n\n"
             f"👉 请连续发送要添加的文件（图片/视频/音频/文档），"
             f"最多 {MAX_COLLECTION_FILES} 个。\n"
@@ -546,9 +555,10 @@ async def done_collection(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
             col_info = conn.execute("SELECT name FROM collections WHERE code = ?", (col_code,)).fetchone()
             col_name = col_info['name'] if col_info else "未命名"
+            safe_col_name = escape_markdown(col_name)
 
             await update.message.reply_text(
-                f"🎉 集合「{col_name}」创建完成！\n\n"
+                f"🎉 集合「{safe_col_name}」创建完成！\n\n"
                 f"📦 代码: `{col_code}`\n"
                 f"📊 共 {count} 个文件\n\n"
                 f"将代码发送给 bot 即可获取所有文件。",
@@ -605,8 +615,9 @@ async def my_collections(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         text = "📦 *我的集合列表：*\n\n"
         for r in rows:
             status_icon = "✅" if r['status'] == 'completed' else "🔧"
+            safe_r_name = escape_markdown(r['name'])
             text += (
-                f"{status_icon} *{r['name']}*\n"
+                f"{status_icon} *{safe_r_name}*\n"
                 f"  代码: `{r['code']}`\n"
                 f"  文件数: {r['file_count']} | 创建于: {r['created_at']}\n\n"
             )
@@ -932,13 +943,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             await message.reply_text(f"❌ 集合不存在: `{col_code}`", parse_mode="Markdown")
             continue
 
+        safe_col_name_1 = escape_markdown(col_info['name'])
         if col_info['status'] != 'completed':
-            await message.reply_text(f"⚠️ 集合「{col_info['name']}」尚未完成。")
+            await message.reply_text(f"⚠️ 集合「{safe_col_name_1}」尚未完成。")
             continue
 
         files = get_collection_files(col_code)
         if not files:
-            await message.reply_text(f"⚠️ 集合「{col_info['name']}」为空。")
+            await message.reply_text(f"⚠️ 集合「{safe_col_name_1}」为空。")
             continue
 
         # 如果文件数量较多，使用分页按钮
@@ -954,7 +966,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
         # 始终显示集合信息 + 按钮（让用户选择发送方式）
         col_text = (
-            f"📦 *集合「{col_info['name']}」*\n\n"
+            f"📦 *集合「{safe_col_name_1}」*\n\n"
             f"📊 共 {total_files} 个文件\n"
             f"📋 {type_stats_text}\n\n"
             f"请选择操作："
@@ -1236,7 +1248,8 @@ async def _send_collection_page(
     page_files = files[start:end]
 
     # 构建信息文本
-    text = f"📦 *{col_info['name']}* (第{page}/{total_pages}页，共{total}个文件)\n\n"
+    safe_col_name_2 = escape_markdown(col_info['name'])
+    text = f"📦 *{safe_col_name_2}* (第{page}/{total_pages}页，共{total}个文件)\n\n"
 
     for i, f in enumerate(page_files, start + 1):
         type_name = FILE_TYPE_MAP.get(f['file_type'], f['file_type'])
