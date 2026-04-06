@@ -255,7 +255,7 @@ async def handle_forwarded_media(update: Update, context: ContextTypes.DEFAULT_T
                 return
 
             # 自动创建集合
-            uid = msgs[0].effective_user.id
+            uid = msgs[0].from_user.id
             bname = context.bot.username
             code_prefix = get_code_prefix(bname)
             col_name = f"转发组_{datetime.now().strftime('%m%d%H%M')}"
@@ -319,7 +319,7 @@ def _extract_file_info(message) -> tuple:
 
 async def _save_media_messages(messages, context) -> list:
     """批量保存媒体消息，返回代码列表"""
-    uid = messages[0].effective_user.id
+    uid = messages[0].from_user.id
     bname = context.bot.username
     code_prefix = get_code_prefix(bname)
     codes = []
