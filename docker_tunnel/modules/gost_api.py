@@ -236,6 +236,34 @@ class GostAPIClient:
 
         return await self._request("POST", "/config/services", service)
 
+    async def create_forward_service(self, name: str, listen_port: int,
+                                     target_addr: str, protocol: str = "tcp") -> tuple:
+        """
+        创建 TCP/UDP 转发服务
+        
+        监听 listen_port，转发到 target_addr (e.g. "8.8.8.8:80")
+        
+        Args:
+            name: 服务名称
+            listen_port: 本地监听端口
+            target_addr: 目标地址 (IP:Port)
+            protocol: 协议类型 (tcp, udp)
+        """
+        handler_type = "tcp" if protocol in ("tcp", "udp") else protocol
+
+        service = {
+            "name": name,
+            "addr": f":{listen_port}",
+            "handler": {"type": handler_type},
+            "forwarder": {
+                "nodes": [
+                    {"addr": target_addr}
+                ]
+            }
+        }
+
+        return await self._request("POST", "/config/services", service)
+
     @staticmethod
     def _parse_protocol(protocol: str) -> tuple:
         """解析协议字符串，返回 (handler_type, listener_type)"""

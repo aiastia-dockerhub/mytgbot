@@ -5,7 +5,7 @@ Gost 隧道管理 Telegram Bot
 import logging
 import os
 from telegram import Update
-from telegram.ext import Application, ApplicationBuilder, CommandHandler, CallbackContext
+from telegram.ext import Application, ApplicationBuilder, CommandHandler, MessageHandler, filters, CallbackContext
 
 # 配置日志
 logging.basicConfig(
@@ -29,7 +29,7 @@ from modules.tunnel_handlers import (
     create_tunnel, list_tunnels, tunnel_status, start_tunnel, stop_tunnel, del_tunnel
 )
 from modules.batch_handlers import (
-    batch_add_servers, batch_check_servers
+    batch_add_servers, batch_check_servers, batch_create_proxies, handle_proxy_file
 )
 from modules.status_monitor import get_overview
 from modules.admin import admin_only
@@ -66,7 +66,8 @@ async def help_command(update: Update, context: CallbackContext):
         "`/del_tunnel <名称>` — 删除隧道\n\n"
         "📦 *批量操作:*\n"
         "`/batch_servers` — 批量添加服务器\n"
-        "`/batch_check` — 批量检查服务器状态\n\n"
+        "`/batch_check` — 批量检查服务器状态\n"
+        "`/batch_proxy <服务器>` — 批量创建转发（支持文件上传）\n\n"
         "📖 *支持协议:*\n"
         "代理: `socks5`, `http`, `ss`, `tcp`, `socks5+tls`, `http+tls`\n"
         "隧道: `relay+tls`, `relay+ws+tls`, `relay`, `tcp`"
@@ -136,6 +137,10 @@ def main():
     # 批量操作
     application.add_handler(CommandHandler("batch_servers", batch_add_servers))
     application.add_handler(CommandHandler("batch_check", batch_check_servers))
+    application.add_handler(CommandHandler("batch_proxy", batch_create_proxies))
+
+    # 文件上传处理（用于批量代理）
+    application.add_handler(MessageHandler(filters.Document.ALL, handle_proxy_file))
 
     # 启动
     logger.info("Bot 已启动，开始轮询消息...")
