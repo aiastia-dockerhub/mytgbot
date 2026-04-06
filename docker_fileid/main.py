@@ -1483,7 +1483,7 @@ async def handle_group_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def handle_forwarded_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """处理转发的媒体消息（包括单个和批量转发）"""
+    """处理转发的媒体消息（包括单个和批量转发，自动为媒体组创建集合）"""
     message = update.message
     if not message:
         return
@@ -1494,15 +1494,199 @@ async def handle_forwarded_media(update: Update, context: ContextTypes.DEFAULT_T
                 bool(message.video),
                 bool(message.document))
 
-    # 转发的媒体消息直接用附件处理（逐个处理，更可靠）
-    if message.document or message.photo or message.video or message.audio or message.voice:
-        await handle_attachment(update, context)
-    elif message.text:
-        await handle_text(update, context)
+    has_media = message.document or message.photo or message.video or message.audio or message.voice
+    if not has_media:
+        if message.text:
+            await handle_text(update, context)
+        else:
+            await message.reply_text(
+                "请转发包含媒体（图片/视频/音频/文档）的消息，我会返回其代码。"
+            )
+        return
+
+    # 如果是媒体组（多个媒体一起转发），自动收集并创建集合
+    media_group_id = message.media_group_id
+    if media_group_id:
+        # 收集同组转发媒体（复用 pending_media_groups 机制）
+        if 'pending_forward_groups' not in context.bot_data:
+            context.bot_data['pending_forward_groups'] = {}
+
+        if media_group_id not in context.bot_data['pending_forward_groups']:
+            context.bot_data['pending_forward_groups'][media_group_id] = {
+                'messages': [],
+                'timer': None
+            }
+
+        group_data = context.bot_data['pending_forward_groups'][media_group_id]
+        group_data['messages'].append(message)
+
+        # 重置计时器
+        if group_data['timer']:
+            group_data['timer'].cancel()
+
+        async def process_forward_group():
+            try:
+                await asyncio.sleep(2)  # 等待收集所有同组消息
+
+                msgs = group_data['messages']
+                if not msgs:
+                    return
+                uid = msgs[0].effective_user.id
+                bname = context.bot.username
+                code_prefix = get_code_prefix(bname)
+
+                codes = []
+                errors = []
+
+                # 逐个保存文件
+                for msg in msgs:
+                    try:
+                        if msg.photo:
+                            photo = msg.photo[-1]
+                            code = save_file_to_db(uid, 'photo', photo.file_id, photo.file_size or 0, photo.file_unique_id or '', bname)
+                        elif msg.video:
+                            code = save_file_to_db(uid, 'video', msg.video.file_id, msg.video.file_size or 0, msg.video.file_unique_id or '', bname)
+                        elif msg.document:
+                            code = save_file_to_db(uid, 'document', msg.document.file_id, msg.document.file_size or 0, msg.document.file_unique_id or '', bname)
+                        elif msg.audio:
+                            code = save_file_to_db(uid, 'audio', msg.audio.file_id, msg.audio.file_size or 0, msg.audio.file_unique_id or '', bname)
+                        else:
+                            code = None
+
+                        if code:
+                            codes.append(code)
+                        else:
+                            errors.append("未知类型")
+                    except Exception as e:
+                        errors.append(str(e))
+
+                if not codes:
+                    await msgs[0].reply_text("❌ 转发的媒体组处理失败。")
+                    return
+
+                # 自动创建集合
+                now_str = datetime.now().strftime("%m%d%H%M")
+                col_name = f"转发组_{now_str}"
+                col_code_raw = generate_unique_code()
+                full_col_code = f"{code_prefix}_col:{col_code_raw}"
+                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                conn = get_db()
+                try:
+                    conn.execute(
+                        """INSERT INTO collections (code, bot_username, name, user_id, file_count, status, created_at, updated_at)
+                           VALUES (?, ?, ?, ?, ?, 'completed', ?, ?)""",
+                        (full_col_code, bname, col_name, uid, len(codes), now, now)
+                    )
+                    for i, code in enumerate(codes):
+                        conn.execute(
+                            "INSERT INTO collection_items (collection_code, file_code, sort_order) VALUES (?, ?, ?)",
+                            (full_col_code, code, i + 1)
+                        )
+                    conn.commit()
+                except Exception as e:
+                    logger.error("自动创建转发集合失败: %s", e)
+                    # 降级：只返回单个代码
+                    reply = f"✅ 转发媒体已保存（共 {len(codes)} 个）：\n\n"
+                    reply += "\n".join(f"`{c}`" for c in codes)
+                    try:
+                        await msgs[0].reply_text(reply, parse_mode="Markdown")
+                    except Exception:
+                        pass
+                    return
+                finally:
+                    conn.close()
+
+                # 回复集合信息 + 按钮
+                safe_col_name = escape_markdown(col_name)
+                reply = (
+                    f"✅ 转发媒体组已保存并自动创建集合！\n\n"
+                    f"📦 集合: *{safe_col_name}*\n"
+                    f"📊 共 {len(codes)} 个文件\n"
+                    f"📦 集合代码: `{full_col_code}`\n\n"
+                )
+                reply += "单个文件代码：\n"
+                reply += "\n".join(f"`{c}`" for c in codes)
+
+                # 添加发送按钮
+                keyboard = [
+                    [
+                        InlineKeyboardButton("⬇️ 全部发送", callback_data=f"col_send|{full_col_code}"),
+                        InlineKeyboardButton("▶️ 自动发送", callback_data=f"col_auto|{full_col_code}"),
+                    ],
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+
+                try:
+                    await msgs[0].reply_text(reply, parse_mode="Markdown", reply_markup=reply_markup)
+                except Exception as e:
+                    logger.error("回复转发组失败: %s", e)
+                    # 降级不带按钮
+                    try:
+                        await msgs[0].reply_text(reply, parse_mode="Markdown")
+                    except Exception:
+                        pass
+
+                if errors:
+                    logger.error("转发组处理错误: %s", errors)
+
+            except Exception as e:
+                logger.error("process_forward_group 异步任务失败: %s", e, exc_info=True)
+                # 降级：逐个处理
+                for msg in group_data['messages']:
+                    try:
+                        await handle_attachment_simple(msg, context)
+                    except Exception:
+                        pass
+            finally:
+                # 清理
+                if media_group_id in context.bot_data.get('pending_forward_groups', {}):
+                    del context.bot_data['pending_forward_groups'][media_group_id]
+
+        group_data['timer'] = asyncio.create_task(process_forward_group())
     else:
-        await message.reply_text(
-            "请转发包含媒体（图片/视频/音频/文档）的消息，我会返回其代码。"
-        )
+        # 单个转发媒体，直接处理
+        await handle_attachment(update, context)
+
+
+async def handle_attachment_simple(message, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """简单的附件处理（只保存并回复代码，用于降级场景）"""
+    user_id = message.effective_user.id
+    bot_username = context.bot.username
+
+    file_id = None
+    file_type = None
+    file_size = 0
+    file_unique_id = ''
+
+    if message.photo:
+        photo = message.photo[-1]
+        file_id = photo.file_id
+        file_type = 'photo'
+        file_size = photo.file_size or 0
+        file_unique_id = photo.file_unique_id or ''
+    elif message.video:
+        file_id = message.video.file_id
+        file_type = 'video'
+        file_size = message.video.file_size or 0
+        file_unique_id = message.video.file_unique_id or ''
+    elif message.document:
+        file_id = message.document.file_id
+        file_type = 'document'
+        file_size = message.document.file_size or 0
+        file_unique_id = message.document.file_unique_id or ''
+    elif message.audio:
+        file_id = message.audio.file_id
+        file_type = 'audio'
+        file_size = message.audio.file_size or 0
+        file_unique_id = message.audio.file_unique_id or ''
+    else:
+        return
+
+    code = save_file_to_db(user_id, file_type, file_id, file_size, file_unique_id, bot_username)
+    if code:
+        type_name = FILE_TYPE_MAP.get(file_type, file_type)
+        await message.reply_text(f"✅ {type_name}已保存！\n\n代码: `{code}`", parse_mode="Markdown")
 
 
 # ==================== 错误处理 ====================
