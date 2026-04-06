@@ -173,24 +173,32 @@ async def list_proxies(update: Update, context: CallbackContext):
     """列出所有代理"""
     with session_scope() as session:
         proxies = session.query(Proxy).all()
+        # 在 session 内构建数据，避免 DetachedInstanceError
+        proxy_data = []
+        for p in proxies:
+            server = session.query(Server).filter(Server.id == p.server_id).first()
+            proxy_data.append({
+                'id': p.id,
+                'name': p.name,
+                'server_name': server.name if server else '未知',
+                'server_ip': server.ip if server else '未知',
+                'protocol': p.protocol,
+                'listen_port': p.listen_port,
+                'is_active': p.is_active,
+            })
 
-    if not proxies:
+    if not proxy_data:
         await update.message.reply_text("📭 暂无代理服务。使用 `/create_proxy` 创建。", parse_mode='Markdown')
         return
 
     lines = ["📋 *代理列表*\n"]
-    for p in proxies:
-        with session_scope() as s:
-            server = s.query(Server).filter(Server.id == p.server_id).first()
-            server_name = server.name if server else '未知'
-            server_ip = server.ip if server else '未知'
-
-        active_emoji = "🟢" if p.is_active else "🔴"
+    for p in proxy_data:
+        active_emoji = "🟢" if p['is_active'] else "🔴"
         lines.append(
-            f"{active_emoji} *{p.name}* (ID:{p.id})\n"
-            f"  服务器: `{server_name}` ({server_ip})\n"
-            f"  协议: `{p.protocol}` | 端口: `{p.listen_port}`\n"
-            f"  状态: {'运行中' if p.is_active else '已停止'}\n"
+            f"{active_emoji} *{p['name']}* (ID:{p['id']})\n"
+            f"  服务器: `{p['server_name']}` ({p['server_ip']})\n"
+            f"  协议: `{p['protocol']}` | 端口: `{p['listen_port']}`\n"
+            f"  状态: {'运行中' if p['is_active'] else '已停止'}\n"
         )
 
     await update.message.reply_text("\n".join(lines), parse_mode='Markdown')

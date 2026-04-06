@@ -20,7 +20,7 @@ from db.database import init_db
 
 # 导入命令处理函数
 from modules.server_handlers import (
-    add_server, verify_server, list_servers, server_info, del_server, check_server
+    add_server, verify_server, list_servers, server_info, del_server, check_server, cancel_server
 )
 from modules.proxy_handlers import (
     create_proxy, list_proxies, del_proxy, start_proxy, stop_proxy
@@ -49,6 +49,7 @@ async def help_command(update: Update, context: CallbackContext):
         "`/list_servers` — 列出所有服务器\n"
         "`/server_info <名称>` — 查看服务器详情\n"
         "`/del_server <名称>` — 删除服务器\n"
+        "`/cancel_server <名称>` — 取消添加（输错时使用）\n"
         "`/check_server <名称>` — 检查服务器状态\n\n"
         "📡 *代理管理（单服务器）:*\n"
         "`/create_proxy <名称> <服务器> <协议> [端口]` — 创建代理\n"
@@ -115,6 +116,7 @@ def main():
     application.add_handler(CommandHandler("server_info", server_info))
     application.add_handler(CommandHandler("del_server", del_server))
     application.add_handler(CommandHandler("check_server", check_server))
+    application.add_handler(CommandHandler("cancel_server", cancel_server))
 
     # 代理管理
     application.add_handler(CommandHandler("create_proxy", create_proxy))

@@ -8,7 +8,8 @@ from db.database import session_scope
 from db.models import Server
 from modules.admin import admin_only
 from modules.server_handlers import generate_username, generate_password, get_server_api_client
-from config import encrypt_value, GOST_DEFAULT_API_PORT
+from modules.gost_api import GostAPIClient
+from config import encrypt_value, decrypt_value, GOST_DEFAULT_API_PORT
 
 logger = logging.getLogger(__name__)
 
@@ -137,20 +138,38 @@ async def batch_check_servers(update: Update, context: CallbackContext):
     """批量检查所有服务器状态"""
     with session_scope() as session:
         servers = session.query(Server).all()
+        # 在 session 内提取数据
+        server_data = []
+        for s in servers:
+            server_data.append({
+                'id': s.id,
+                'name': s.name,
+                'ip': s.ip,
+                'api_port': s.api_port,
+                'api_user': s.api_user,
+                'api_password_encrypted': s.api_password_encrypted,
+            })
 
-    if not servers:
+    if not server_data:
         await update.message.reply_text("📭 暂无服务器。", parse_mode='Markdown')
         return
 
-    await update.message.reply_text(f"⏳ 正在检查 {len(servers)} 台服务器...")
+    await update.message.reply_text(f"⏳ 正在检查 {len(server_data)} 台服务器...")
 
     results = []
-    for server in servers:
-        client = get_server_api_client(server)
+    for sd in server_data:
+        # 构建临时 Server 对象用于 API 客户端
+        from config import decrypt_value
+        client = GostAPIClient(
+            ip=sd['ip'],
+            api_port=sd['api_port'],
+            api_user=sd['api_user'],
+            api_password=decrypt_value(sd['api_password_encrypted'])
+        )
         success, data = await client.test_connection()
 
         with session_scope() as session:
-            srv = session.query(Server).filter(Server.id == server.id).first()
+            srv = session.query(Server).filter(Server.id == sd['id']).first()
             if srv:
                 srv.status = 'online' if success else 'offline'
 
@@ -160,9 +179,9 @@ async def batch_check_servers(update: Update, context: CallbackContext):
             svc_count = 0
             if svc_ok and isinstance(svc_data, list):
                 svc_count = len(svc_data)
-            results.append(f"🟢 *{server.name}* ({server.ip}) — 在线 | 服务数: {svc_count}")
+            results.append(f"🟢 *{sd['name']}* ({sd['ip']}) — 在线 | 服务数: {svc_count}")
         else:
-            results.append(f"🔴 *{server.name}* ({server.ip}) — 离线")
+            results.append(f"🔴 *{sd['name']}* ({sd['ip']}) — 离线")
 
     msg = "📡 *服务器状态检查*\n\n" + "\n".join(results)
     await update.message.reply_text(msg, parse_mode='Markdown')

@@ -142,7 +142,39 @@ async def add_server(update: Update, context: CallbackContext):
         f"  用户名: `{api_user}`\n"
         f"  密码: `{api_password}`\n"
         f"  API端口: `{api_port}`\n\n"
-        f"部署完成后，发送 `/verify_server {name}` 验证连通性",
+        f"部署完成后，发送 `/verify_server {name}` 验证连通性\n\n"
+        f"💡 输入错误？使用 `/cancel_server {name}` 取消添加",
+        parse_mode='Markdown'
+    )
+
+
+@admin_only
+async def cancel_server(update: Update, context: CallbackContext):
+    """取消/撤回添加的服务器"""
+    args = context.args or []
+    if not args:
+        await update.message.reply_text("用法: `/cancel_server <名称或ID>`", parse_mode='Markdown')
+        return
+
+    identifier = args[0]
+    with session_scope() as session:
+        server = session.query(Server).filter(Server.name == identifier).first()
+        if not server:
+            try:
+                server = session.query(Server).filter(Server.id == int(identifier)).first()
+            except ValueError:
+                pass
+        if not server:
+            await update.message.reply_text(f"❌ 未找到服务器 `{identifier}`", parse_mode='Markdown')
+            return
+
+        name = server.name
+        status = server.status
+        session.delete(server)
+
+    await update.message.reply_text(
+        f"✅ 服务器 *{name}* 已取消/删除。\n"
+        f"（之前状态: {status}）",
         parse_mode='Markdown'
     )
 
@@ -192,19 +224,30 @@ async def list_servers(update: Update, context: CallbackContext):
     """列出所有服务器"""
     with session_scope() as session:
         servers = session.query(Server).all()
+        # 在 session 内构建数据，避免 DetachedInstanceError
+        server_data = []
+        for s in servers:
+            server_data.append({
+                'id': s.id,
+                'name': s.name,
+                'ip': s.ip,
+                'api_port': s.api_port,
+                'status': s.status,
+                'created_at': s.created_at.strftime('%Y-%m-%d %H:%M'),
+            })
 
-    if not servers:
+    if not server_data:
         await update.message.reply_text("📭 暂无服务器。使用 `/add_server` 添加。", parse_mode='Markdown')
         return
 
     lines = ["📋 *服务器列表*\n"]
-    for s in servers:
-        status_emoji = "🟢" if s.status == 'online' else "🔴"
+    for s in server_data:
+        status_emoji = "🟢" if s['status'] == 'online' else "🔴"
         lines.append(
-            f"{status_emoji} *{s.name}* (ID:{s.id})\n"
-            f"  IP: `{s.ip}:{s.api_port}`\n"
-            f"  状态: {s.status}\n"
-            f"  添加时间: {s.created_at.strftime('%Y-%m-%d %H:%M')}\n"
+            f"{status_emoji} *{s['name']}* (ID:{s['id']})\n"
+            f"  IP: `{s['ip']}:{s['api_port']}`\n"
+            f"  状态: {s['status']}\n"
+            f"  添加时间: {s['created_at']}\n"
         )
 
     await update.message.reply_text("\n".join(lines), parse_mode='Markdown')
