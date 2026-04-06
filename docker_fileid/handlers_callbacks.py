@@ -58,7 +58,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def _send_all(context, chat_id, col_code, query=None):
     """发送集合全部文件"""
+    logger.info("_send_all 开始: col_code=%s", col_code)
     files = get_collection_files(col_code)
+    logger.info("_send_all 查询到 %d 个文件", len(files) if files else 0)
     if not files:
         if query:
             await query.edit_message_text("⚠️ 集合为空。")
@@ -70,23 +72,33 @@ async def _send_all(context, chat_id, col_code, query=None):
     if query:
         await query.edit_message_text(f"📤 正在发送... (0/{total})")
 
+    for f in files:
+        logger.info("  文件: code=%s type=%s file_id=%s...(%d chars)",
+                     f.get('code'), f.get('file_type'),
+                     str(f.get('telegram_file_id', ''))[:30],
+                     len(str(f.get('telegram_file_id', ''))))
+
     pv = [f for f in files if f['file_type'] in ('photo', 'video')]
     docs = [f for f in files if f['file_type'] == 'document']
     audios = [f for f in files if f['file_type'] in ('audio', 'voice')]
+    logger.info("分组: photo+video=%d, document=%d, audio=%d", len(pv), len(docs), len(audios))
 
     batch_num = 0
     for group in [pv, docs, audios]:
         for i in range(0, len(group), GROUP_SEND_SIZE):
             batch = group[i:i + GROUP_SEND_SIZE]
             try:
-                sent_count += await send_file_group(context, chat_id, batch)
+                sent = await send_file_group(context, chat_id, batch)
+                sent_count += sent
+                logger.info("batch sent: %d, total: %d/%d", sent, sent_count, total)
             except Exception as e:
-                logger.error("批量发送失败: %s", e)
+                logger.error("批量发送失败: %s", e, exc_info=True)
             batch_num += 1
             if batch_num % 2 == 0:
                 await asyncio.sleep(2)
 
     result_text = f"✅ 发送完成！成功 {sent_count}/{total}"
+    logger.info("_send_all 完成: %s", result_text)
     if query:
         try:
             await query.edit_message_text(result_text)

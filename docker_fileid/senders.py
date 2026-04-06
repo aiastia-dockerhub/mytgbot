@@ -21,7 +21,10 @@ async def send_file_group(
     返回成功发送的数量
     """
     if not files:
+        logger.warning("send_file_group: files 为空")
         return 0
+
+    logger.info("send_file_group: 准备发送 %d 个文件到 chat_id=%s", len(files), chat_id)
 
     # 按类型分组
     photo_video = []
@@ -47,13 +50,15 @@ async def send_file_group(
         if len(batch) == 1:
             f = batch[0]
             try:
+                fid = f['telegram_file_id']
+                logger.info("发送单个媒体: type=%s, file_id=%s...(len=%d)", f['file_type'], str(fid)[:30], len(str(fid)))
                 if f['file_type'] == 'photo':
-                    await context.bot.send_photo(chat_id=chat_id, photo=f['telegram_file_id'], caption=caption[:1024] if caption else "")
+                    await context.bot.send_photo(chat_id=chat_id, photo=fid, caption=caption[:1024] if caption else "")
                 else:
-                    await context.bot.send_video(chat_id=chat_id, video=f['telegram_file_id'], caption=caption[:1024] if caption else "")
+                    await context.bot.send_video(chat_id=chat_id, video=fid, caption=caption[:1024] if caption else "")
                 sent_count += 1
             except Exception as e:
-                logger.error("发送单个媒体失败: %s", e)
+                logger.error("发送单个媒体失败: %s", e, exc_info=True)
         else:
             media_list = []
             for idx, f in enumerate(batch):
