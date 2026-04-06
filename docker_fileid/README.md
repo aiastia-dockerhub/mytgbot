@@ -62,6 +62,7 @@ python main.py
 | `BOT_TOKEN` | ✅ | Telegram Bot Token |
 | `ADMIN_IDS` | ❌ | 管理员ID（逗号分隔） |
 | `ENCRYPTION_KEY` | ❌ | Fernet 加密密钥 |
+| `CODE_PREFIX` | ❌ | 自定义代码前缀（默认使用 bot 用户名，不带@） |
 
 ### 生成加密密钥
 
@@ -86,11 +87,13 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 ## 📝 代码格式
 
 ```
-@BotUsername_p:a8Kj7xQm3nRt4wBk9mN2pLXY8zQn567  ← 图片
-@BotUsername_v:a8Kj7xQm3nRt4wBk9mN2pLXY8zQn567  ← 视频
-@BotUsername_d:a8Kj7xQm3nRt4wBk9mN2pLXY8zQn567  ← 文档/音频
-@BotUsername_col:a8Kj7xQm3nRt4wBk9mN2pLXY8zQn567 ← 集合
+BotUsername_p:a8Kj7xQm3nRt4wBk9mN2pLXY8zQn567  ← 图片
+BotUsername_v:a8Kj7xQm3nRt4wBk9mN2pLXY8zQn567  ← 视频
+BotUsername_d:a8Kj7xQm3nRt4wBk9mN2pLXY8zQn567  ← 文档/音频
+BotUsername_col:a8Kj7xQm3nRt4wBk9mN2pLXY8zQn567 ← 集合
 ```
+
+可通过 `CODE_PREFIX` 环境变量自定义前缀，例如设置 `CODE_PREFIX=FID` 后代码格式为 `FID_p:xxx`。
 
 ## 🗄️ 数据库
 

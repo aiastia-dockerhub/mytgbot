@@ -41,6 +41,7 @@ if env_path.exists():
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '')
 ADMIN_IDS = [int(x) for x in os.environ.get('ADMIN_IDS', '').split(',') if x.strip().isdigit()]
 ENCRYPTION_KEY = os.environ.get('ENCRYPTION_KEY', '')
+CODE_PREFIX = os.environ.get('CODE_PREFIX', '')  # 自定义代码前缀，默认使用 bot 用户名（不带@）
 MAX_COLLECTION_FILES = 999
 AUTO_SEND_INTERVAL = 5  # 秒
 GROUP_SEND_SIZE = 10  # 每组最多10个
@@ -338,6 +339,11 @@ async def send_file_group(
 
 
 # ==================== 文件保存 ====================
+def get_code_prefix(bot_username: str) -> str:
+    """获取代码前缀（自定义或 bot 用户名，不带@）"""
+    return CODE_PREFIX if CODE_PREFIX else bot_username
+
+
 def save_file_to_db(user_id: int, file_type: str, file_id: str,
                     file_size: int, file_unique_id: str, bot_username: str) -> Optional[str]:
     """保存文件到数据库，返回代码"""
@@ -345,7 +351,8 @@ def save_file_to_db(user_id: int, file_type: str, file_id: str,
     try:
         code = generate_unique_code()
         prefix = FILE_TYPE_PREFIX.get(file_type, 'd')
-        full_code = f"@{bot_username}_{prefix}:{code}"
+        code_prefix = get_code_prefix(bot_username)
+        full_code = f"{code_prefix}_{prefix}:{code}"
 
         encrypted_fid = encrypt_file_id(file_id)
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -384,14 +391,16 @@ def get_file_from_db(code: str) -> Optional[Dict]:
 
 def parse_file_code(text: str, bot_username: str) -> List[str]:
     """从文本中解析出所有文件代码"""
-    # 匹配 @BotName_p:xxx @BotName_v:xxx @BotName_d:xxx 格式
-    pattern = re.compile(rf'@{re.escape(bot_username)}_[pvd]:[A-Za-z0-9]{{{CODE_LENGTH}}}')
+    code_prefix = get_code_prefix(bot_username)
+    # 匹配 Prefix_p:xxx Prefix_v:xxx Prefix_d:xxx 格式
+    pattern = re.compile(rf'{re.escape(code_prefix)}_[pvd]:[A-Za-z0-9]{{{CODE_LENGTH}}}')
     return pattern.findall(text)
 
 
 def parse_collection_code(text: str, bot_username: str) -> List[str]:
     """从文本中解析出集合代码"""
-    pattern = re.compile(rf'@{re.escape(bot_username)}_col:[A-Za-z0-9]{{{CODE_LENGTH}}}')
+    code_prefix = get_code_prefix(bot_username)
+    pattern = re.compile(rf'{re.escape(code_prefix)}_col:[A-Za-z0-9]{{{CODE_LENGTH}}}')
     return pattern.findall(text)
 
 
@@ -448,10 +457,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 • `/stats` — 管理员统计
 
 📝 *代码格式：*
-• `@{bot_username}_p:xxx` — 图片
-• `@{bot_username}_v:xxx` — 视频
-• `@{bot_username}_d:xxx` — 文档/音频
-• `@{bot_username}_col:xxx` — 集合
+• `{bot_username}_p:xxx` — 图片
+• `{bot_username}_v:xxx` — 视频
+• `{bot_username}_d:xxx` — 文档/音频
+• `{bot_username}_col:xxx` — 集合
 
 将代码直接发送给 bot 即可获取文件！"""
 
@@ -479,7 +488,8 @@ async def create_collection(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     conn = get_db()
     try:
         code = generate_unique_code()
-        full_code = f"@{bot_username}_col:{code}"
+        code_prefix = get_code_prefix(bot_username)
+        full_code = f"{code_prefix}_col:{code}"
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         conn.execute(
@@ -613,7 +623,9 @@ async def delete_collection(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     """/delcol 删除集合"""
     user_id = update.effective_user.id
     if not context.args:
-        await update.message.reply_text("请提供集合代码。\n用法: `/delcol @BotName_col:xxx`", parse_mode="Markdown")
+        bot_username = context.bot.username
+        code_prefix = get_code_prefix(bot_username)
+        await update.message.reply_text(f"请提供集合代码。\n用法: `/delcol {code_prefix}_col:xxx`", parse_mode="Markdown")
         return
 
     col_code = context.args[0]
@@ -672,6 +684,7 @@ async def get_id_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     if result:
+        code_prefix = get_code_prefix(bot_username)
         await update.message.reply_text(
             f"✅ {file_type}ID已保存！\n\n代码: `{result}`\n\n将此代码发送给 `@{bot_username}` 即可获取文件。",
             parse_mode="Markdown",
