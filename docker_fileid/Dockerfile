@@ -14,8 +14,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 创建数据目录
 RUN mkdir -p /app/data
 
-# 复制应用代码
-COPY main.py .
+# 复制所有应用代码
+COPY *.py .
 
 # 设置持久化数据卷
 VOLUME ["/app/data"]
