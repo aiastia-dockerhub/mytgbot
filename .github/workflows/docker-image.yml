@@ -1,11 +1,26 @@
 name: docker-image
 
 on:
-  push:
-    branches:
-      - 'main'
-    tags:
-      - 'v*'
+  # 自动推送运行（已注释，取消注释即可启用）
+  # push:
+  #   branches:
+  #     - 'main'
+  #   tags:
+  #     - 'v*'
+
+  # 手动运行
+  workflow_dispatch:
+    inputs:
+      push_image:
+        description: '是否推送镜像到 DockerHub'
+        required: true
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+  # PR 检查
   pull_request:
     branches:
       - 'text'
@@ -53,5 +68,5 @@ jobs:
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.file }}
-          push: ${{ github.event_name != 'pull_request' }}
+          push: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.push_image == 'true' || github.event_name == 'push' }}
           tags: aiastia/mytgbot:${{ matrix.tag }}
