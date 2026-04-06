@@ -14,7 +14,7 @@ class GostAPIClient:
     """gost v3 API 客户端"""
 
     def __init__(self, ip: str, api_port: int, api_user: str, api_password: str):
-        self.base_url = f"http://{ip}:{api_port}/api"
+        self.base_url = f"http://{ip}:{api_port}"
         self.auth = aiohttp.BasicAuth(api_user, api_password)
         self.ip = ip
         self.api_port = api_port
@@ -172,6 +172,7 @@ class GostAPIClient:
         创建隧道入口服务
         
         监听端口，转发到下一跳
+        TLS: 不指定证书时 gost 自动生成自签名证书（用于加密足够）
         """
         handler_type, listener_type = self._parse_protocol(protocol)
         
@@ -197,6 +198,7 @@ class GostAPIClient:
         创建隧道中继服务
         
         监听端口，转发到下一跳
+        TLS: 不指定证书时 gost 自动生成自签名证书（用于加密足够）
         """
         handler_type, listener_type = self._parse_protocol(protocol)
         
@@ -222,6 +224,7 @@ class GostAPIClient:
         创建隧道出口服务
         
         监听端口，不转发
+        TLS: 不指定证书时 gost 自动生成自签名证书（用于加密足够）
         """
         handler_type, listener_type = self._parse_protocol(protocol)
         
