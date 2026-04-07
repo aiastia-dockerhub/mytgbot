@@ -20,9 +20,9 @@ ADMIN_IDS = [int(x) for x in os.environ.get('ADMIN_IDS', '').split(',') if x.str
 DB_PATH = './data/vqueue.db'
 
 # 发送控制
-SEND_INTERVAL = int(os.environ.get('SEND_INTERVAL', '3'))       # 每个用户之间间隔（秒）
-VIDEO_INTERVAL = int(os.environ.get('VIDEO_INTERVAL', '10'))    # 每个视频之间间隔（秒）
-QUEUE_BATCH_SIZE = 1  # 每次处理队列中的视频数
+SEND_CONCURRENCY = int(os.environ.get('SEND_CONCURRENCY', '10'))    # 并发发送用户数（同时发给N个用户）
+BATCH_INTERVAL = float(os.environ.get('BATCH_INTERVAL', '1.0'))     # 每批发完后间隔（秒）
+VIDEO_INTERVAL = int(os.environ.get('VIDEO_INTERVAL', '5'))         # 不同组之间间隔（秒）
 
 # 转发保护（防止接收者转发/保存）
 PROTECT_CONTENT = os.environ.get('PROTECT_CONTENT', 'true').lower() == 'true'

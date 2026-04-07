@@ -6,7 +6,7 @@ from typing import List, Dict
 from telegram.ext import ContextTypes
 from telegram import InputMediaVideo, InputMediaPhoto
 
-from config import SEND_INTERVAL, VIDEO_INTERVAL, PROTECT_CONTENT, SHOW_SOURCE, SOURCE_FORMAT
+from config import SEND_CONCURRENCY, BATCH_INTERVAL, VIDEO_INTERVAL, PROTECT_CONTENT, SHOW_SOURCE, SOURCE_FORMAT
 from database import (
     get_next_pending_group, get_active_users, update_queue_status,
     increment_sent_count, log_send, update_user_status
@@ -103,8 +103,23 @@ async def send_media_group_to_user(
         return sent
 
 
+async def _send_to_user(bot, user_id: int, items: List[Dict],
+                        caption: str, protect: bool, queue_id: int) -> tuple:
+    """发送媒体给单个用户，返回 (user_id, success)"""
+    sent = await send_media_group_to_user(bot, user_id, items, caption, protect)
+
+    if sent == 0:
+        update_user_status(user_id, UserStatus.SYSTEM_STOPPED)
+        log_send(queue_id, user_id, "blocked")
+        logger.warning("用户 %s 发送失败，标记为 system_stopped", user_id)
+        return (user_id, False)
+    else:
+        log_send(queue_id, user_id, "sent")
+        return (user_id, True)
+
+
 async def process_queue(context: ContextTypes.DEFAULT_TYPE):
-    """处理队列：取一组 → 发送给所有活跃用户"""
+    """处理队列：取一组 → 并发分批发送给所有活跃用户"""
     group = get_next_pending_group()
     if not group:
         return
@@ -128,37 +143,43 @@ async def process_queue(context: ContextTypes.DEFAULT_TYPE):
         update_queue_status(queue_ids, QueueStatus.DONE)
         return
 
-    logger.info("开始发送组 %s (%d个媒体) 给 %d 个活跃用户",
-                group_id, len(items), len(active_users))
+    # 过滤掉来源用户
+    target_users = [u for u in active_users if u['user_id'] != from_user_id]
+
+    logger.info("开始发送组 %s (%d个媒体) 给 %d 个用户，并发数=%d",
+                group_id, len(items), len(target_users), SEND_CONCURRENCY)
 
     protect = PROTECT_CONTENT
     blocked_count = 0
 
-    for user in active_users:
-        to_id = user['user_id']
+    # 分批发送，每批 SEND_CONCURRENCY 个用户并发
+    for i in range(0, len(target_users), SEND_CONCURRENCY):
+        batch = target_users[i:i + SEND_CONCURRENCY]
 
-        # 不发送给视频来源用户自己
-        if to_id == from_user_id:
-            continue
+        tasks = [
+            _send_to_user(context.bot, u['user_id'], items, caption, protect, queue_ids[0])
+            for u in batch
+        ]
 
-        sent = await send_media_group_to_user(
-            context.bot, to_id, items, caption, protect
-        )
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        if sent == 0:
-            # 发送失败，可能是拉黑
-            blocked_count += 1
-            update_user_status(to_id, UserStatus.SYSTEM_STOPPED)
-            log_send(queue_ids[0], to_id, "blocked")
-            logger.warning("用户 %s 发送失败，标记为 system_stopped", to_id)
-        else:
-            log_send(queue_ids[0], to_id, "sent")
+        for r in results:
+            if isinstance(r, Exception):
+                logger.error("并发发送异常: %s", r)
+                blocked_count += 1
+            elif not r[1]:
+                blocked_count += 1
 
-        # 用户间间隔
-        await asyncio.sleep(SEND_INTERVAL)
+        # 批次间短暂间隔
+        if i + SEND_CONCURRENCY < len(target_users):
+            await asyncio.sleep(BATCH_INTERVAL)
 
     # 标记完成
     increment_sent_count(queue_ids)
     update_queue_status(queue_ids, QueueStatus.DONE)
 
-    logger.info("组 %s 发送完成，%d 个用户被标记拉黑", group_id, blocked_count)
+    logger.info("组 %s 发送完成，%d/%d 成功，%d 个被标记拉黑",
+                group_id, len(target_users) - blocked_count, len(target_users), blocked_count)
+
+    # 组间间隔
+    await asyncio.sleep(VIDEO_INTERVAL)
