@@ -22,7 +22,7 @@ def get_extensions():
 
 
 setup(
-    name="fileid_bot",
+    name="vqueue_bot",
     ext_modules=cythonize(
         get_extensions(),
         compiler_directives={
