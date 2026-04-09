@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  vsender:
+    image: aiastia/mytgbot:vsender
+    volumes:
+      - ./data:/app/data/
+      - ./videos:/app/videos
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+      - BOT_TOKEN=${BOT_TOKEN}
+      - ADMIN_USER_ID=123456789
+      # - TELEGRAM_API_URL=http://127.0.0.1:8081
+      - VIDEO_ROOT=/app/videos
+      - DB_PATH=./data/vsender.db
+      - SEND_CONCURRENCY=5
+      - BATCH_INTERVAL=1.0
+      - VIDEO_INTERVAL=3.0
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
