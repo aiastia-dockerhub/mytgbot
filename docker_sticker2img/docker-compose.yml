@@ -1,16 +1,13 @@
 version: '3.8'
 
 services:
-  fileid-bot:
-    image: aiastia/mytgbot:fileid
-    volumes:
-      - ./data:/app/data/
+  sticker2img-bot:
+    build: .
+    image: aiastia/mytgbot:sticker2img
     restart: unless-stopped
     environment:
       - TZ=Asia/Shanghai
       - BOT_TOKEN=${BOT_TOKEN}
-      - ADMIN_IDS=${ADMIN_IDS:-}
-      - ENCRYPTION_KEY=${ENCRYPTION_KEY:-}
     logging:
       options:
         max-size: "10m"
