@@ -1,0 +1,129 @@
+# Commander Bot - 技能描述文件
+# 每个被管理的 bot 在这里注册
+# enabled: true/false 控制是否启用路由
+# 描述信息会发送给 LLM 来判断用户意图
+
+bots:
+  sticker2img:
+    username: "sticker2img_bot"  # 替换为实际 bot username（不带@）
+    enabled: true
+    name: "贴纸转图片"
+    description: |
+      将 Telegram 贴纸/表情包转为 PNG 图片或 WEBM/GIF 文件。
+      支持静态贴纸、动画贴纸和视频贴纸。
+    how_to_use: "用户发送贴纸给此 bot，bot 自动返回对应图片/文件"
+    input_type: sticker
+
+  fileid:
+    username: "fileid_bot"  # 替换为实际 bot username
+    enabled: false
+    name: "文件ID互转"
+    description: |
+      图片/视频/音频/文档与唯一代码的双向转换。
+      发送文件获取代码，发送代码获取文件。
+      支持集合管理，最多999个文件一组。
+    how_to_use: |
+      发送图片/视频/文档 → 获取代码
+      发送代码 → 获取对应文件
+      /create 名称 → 创建集合
+    input_type: media
+
+  code:
+    username: "code_bot"  # 替换为实际 bot username
+    enabled: false
+    name: "消息提取器"
+    description: |
+      从文本消息中提取特定格式的代码（如分享链接、文件代码等）。
+      自动识别并保存匹配的内容。
+    how_to_use: "直接发送包含代码的文本消息即可自动提取"
+    input_type: text
+
+  javbus:
+    username: "javbus_bot"  # 替换为实际 bot username
+    enabled: false
+    name: "磁力搜索"
+    description: |
+      搜索 JavBus 影片信息和磁力链接。
+      支持按番号、演员、类型搜索。
+    how_to_use: |
+      /jav 番号 → 查询磁力
+      /jav_star 演员名 → 获取全部影片
+      /jav_search 关键词 → 搜索影片
+    input_type: text
+
+  mpt:
+    username: "mpt_bot"  # 替换为实际 bot username
+    enabled: false
+    name: "媒体监控"
+    description: |
+      监控指定群组/频道的消息，下载媒体文件，按关键词转发。
+      使用 Telethon (userbot) 实现。
+    how_to_use: |
+      /watch enable chat_id → 开始监控
+      /watch disable chat_id → 停止监控
+      /keywords add pattern → 添加关键词
+    input_type: text
+    admin_only: true
+
+  top:
+    username: "top_bot"  # 替换为实际 bot username
+    enabled: false
+    name: "导航链接"
+    description: |
+      分类导航链接浏览器，通过内联按钮浏览不同分类的链接。
+    how_to_use: "/start → 选择分类 → 查看链接列表"
+    input_type: text
+
+  tunnel:
+    username: "tunnel_bot"  # 替换为实际 bot username
+    enabled: false
+    name: "隧道管理"
+    description: |
+      管理 gost v3 隧道和代理服务，支持多服务器链路组网。
+      创建 SOCKS5/HTTP/Shadowsocks 代理和加密隧道。
+    how_to_use: |
+      /add_server 名称 IP → 添加服务器
+      /create_proxy 名称 服务器 协议 端口 → 创建代理
+      /create_tunnel 名称 协议 端口 服务器1 服务器2 → 创建隧道
+    input_type: text
+    admin_only: true
+
+  txttg:
+    username: "txttg_bot"  # 替换为实际 bot username
+    enabled: false
+    name: "文本分享"
+    description: |
+      文本文件分享平台，支持搜索、积分系统、VIP、签到。
+      用户可上传文档，其他用户可搜索下载。
+    how_to_use: |
+      /search 关键词 → 搜索文件
+      /checkin → 每日签到
+      /points → 查看积分
+    input_type: text
+
+  vqueue:
+    username: "vqueue_bot"  # 替换为实际 bot username
+    enabled: false
+    name: "视频队列分发"
+    description: |
+      将视频/照片排队，慢慢分发给所有注册用户。
+      支持转发保护和活跃度检查。
+    how_to_use: |
+      发送视频/照片 → 自动排队分发
+      /start → 注册
+      /stop → 暂停接收
+    input_type: media
+
+  vsender:
+    username: "vsender_bot"  # 替换为实际 bot username
+    enabled: false
+    name: "视频批量发送"
+    description: |
+      从本地目录读取视频文件并广播给白名单用户。
+      支持批量发送、文件夹发送、状态追踪。
+    how_to_use: |
+      /send 文件名 → 发送指定视频
+      /sendnext 数量 → 发送N个未发送视频
+      /senddir 文件夹 → 发送文件夹下视频
+    input_type: text
+    admin_only: true

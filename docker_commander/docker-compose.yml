@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  commander:
+    image: aiastia/mytgbot:commander
+    volumes:
+      - ./data:/app/data/
+      - ./skills.yml:/app/skills.yml:ro
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+      - BOT_TOKEN=${BOT_TOKEN}
+      - ADMIN_IDS=${ADMIN_IDS}
+      - WORK_GROUP_ID=${WORK_GROUP_ID}
+      - LLM_API_URL=${LLM_API_URL}
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_MODEL=${LLM_MODEL:-gpt-4o-mini}
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
