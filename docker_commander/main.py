@@ -1,6 +1,7 @@
 """Commander Bot - 指挥官 Bot 入口"""
 import logging
 import re
+import time
 from functools import wraps
 
 from telegram import Update
@@ -42,6 +43,7 @@ def escape_markdown(text: str) -> str:
 
 async def forward_response_to_user(update: Update, bot_username: str):
     """将 bot 的回复（含媒体）转发给用户，支持多条消息"""
+    bot = manager._bot  # 使用 bot 引用发送消息
     messages = manager.pop_response_message(bot_username)
     logger.info("forward_response_to_user: bot=%s, messages=%s", bot_username, type(messages).__name__ if messages else "None")
     if messages is None:
@@ -61,47 +63,31 @@ async def forward_response_to_user(update: Update, bot_username: str):
             i, bool(msg.photo), bool(msg.document), bool(msg.video),
             bool(msg.animation), bool(msg.sticker), bool(msg.text),
         )
-        if msg.photo:
-            photo = msg.photo[-1]
-            caption = msg.caption or (f"✅ @{bot_username}" if i == 0 else None)
-            await update.message.bot.send_photo(
-                chat_id=chat_id,
-                photo=photo.file_id,
-                caption=caption,
-            )
-            forwarded_any = True
-        elif msg.document:
-            caption = msg.caption or (f"✅ @{bot_username}" if i == 0 and not forwarded_any else None)
-            await update.message.bot.send_document(
-                chat_id=chat_id,
-                document=msg.document.file_id,
-                caption=caption,
-            )
-            forwarded_any = True
-        elif msg.video:
-            caption = msg.caption or (f"✅ @{bot_username}" if i == 0 else None)
-            await update.message.bot.send_video(
-                chat_id=chat_id,
-                video=msg.video.file_id,
-                caption=caption,
-            )
-            forwarded_any = True
-        elif msg.animation:
-            caption = msg.caption or (f"✅ @{bot_username}" if i == 0 else None)
-            await update.message.bot.send_animation(
-                chat_id=chat_id,
-                animation=msg.animation.file_id,
-                caption=caption,
-            )
-            forwarded_any = True
-        elif msg.sticker:
-            await update.message.bot.send_sticker(
-                chat_id=chat_id,
-                sticker=msg.sticker.file_id,
-            )
-            forwarded_any = True
-        else:
-            logger.info("第 %d 条消息无媒体，跳过", i)
+        try:
+            if msg.photo:
+                photo = msg.photo[-1]
+                caption = msg.caption or (f"✅ @{bot_username}" if i == 0 else None)
+                await bot.send_photo(chat_id=chat_id, photo=photo.file_id, caption=caption)
+                forwarded_any = True
+            elif msg.document:
+                caption = msg.caption or (f"✅ @{bot_username}" if i == 0 and not forwarded_any else None)
+                await bot.send_document(chat_id=chat_id, document=msg.document.file_id, caption=caption)
+                forwarded_any = True
+            elif msg.video:
+                caption = msg.caption or (f"✅ @{bot_username}" if i == 0 else None)
+                await bot.send_video(chat_id=chat_id, video=msg.video.file_id, caption=caption)
+                forwarded_any = True
+            elif msg.animation:
+                caption = msg.caption or (f"✅ @{bot_username}" if i == 0 else None)
+                await bot.send_animation(chat_id=chat_id, animation=msg.animation.file_id, caption=caption)
+                forwarded_any = True
+            elif msg.sticker:
+                await bot.send_sticker(chat_id=chat_id, sticker=msg.sticker.file_id)
+                forwarded_any = True
+            else:
+                logger.info("第 %d 条消息无媒体，跳过", i)
+        except Exception as e:
+            logger.error("转发第 %d 条消息失败: %s", i, e)
 
     logger.info("forward_response_to_user 完成: forwarded_any=%s", forwarded_any)
     return forwarded_any
@@ -304,6 +290,15 @@ async def handle_sticker_message(update: Update, context: ContextTypes.DEFAULT_T
 
     user_id = update.effective_user.id
     logger.info("收到用户 %d 的贴纸: %s", user_id, sticker.file_id)
+
+    # 去重：同一个贴纸 file_id 在 10 秒内不重复处理
+    if not hasattr(handle_sticker_message, '_last_sticker'):
+        handle_sticker_message._last_sticker = {}
+    last_time = handle_sticker_message._last_sticker.get(sticker.file_id, 0)
+    if time.time() - last_time < 10:
+        logger.info("贴纸去重，跳过: %s", sticker.file_id)
+        return
+    handle_sticker_message._last_sticker[sticker.file_id] = time.time()
 
     # 直接路由到 sticker2img
     result = await router.route("", input_type="sticker")
