@@ -14,6 +14,27 @@ from telegram.ext import ContextTypes
 logger = logging.getLogger(__name__)
 
 
+def _tgs_to_gif(tgs_path: str, gif_path: str) -> None:
+    """TGS → GIF（逐帧提取 + 白色背景）"""
+    anim = LottieAnimation.from_tgs(tgs_path)
+    total_frames = anim.lottie_animation_get_totalframe()
+    fps = anim.lottie_animation_get_framerate()
+    frames = []
+    for i in range(total_frames):
+        frame = anim.render_pillow_frame(frame_num=i)  # PIL Image（RGBA）
+        if frame is None:
+            continue
+        bg = Image.new("RGBA", frame.size, (255, 255, 255, 255))
+        bg.paste(frame, mask=frame.split()[3])  # 用 alpha 通道作为 mask
+        frames.append(bg.convert("RGB"))
+
+    if frames:
+        frames[0].save(
+            gif_path, save_all=True, append_images=frames[1:],
+            duration=int(1000 / fps) if fps > 0 else 40, loop=0, optimize=True,
+        )
+
+
 def _buf_to_jpg(buf: io.BytesIO) -> io.BytesIO:
     """将图像转为 JPG BytesIO"""
     buf.seek(0)
@@ -61,9 +82,8 @@ async def handle_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
             tmp.write(buf.getvalue())
             tmp_path = tmp.name
         try:
-            anim = LottieAnimation.from_tgs(tmp_path)
             gif_path = tmp_path.replace(".tgs", ".gif")
-            anim.save_animation(gif_path)
+            _tgs_to_gif(tmp_path, gif_path)
 
             # 发送 GIF 动图
             try:
@@ -71,7 +91,8 @@ async def handle_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await message.reply_document(document=f, filename="sticker.gif")
             except Exception:
                 logger.warning("发送 GIF 失败", exc_info=True)
-            os.remove(gif_path)
+            if os.path.exists(gif_path):
+                os.remove(gif_path)
 
         except Exception:
             logger.exception("TGS 转换失败")
@@ -171,12 +192,12 @@ async def handle_pack(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 tmp.write(stk_buf.getvalue())
                                 tmp_path = tmp.name
                             try:
-                                anim = LottieAnimation.from_tgs(tmp_path)
                                 gif_path = tmp_path.replace(".tgs", ".gif")
-                                anim.save_animation(gif_path)
+                                _tgs_to_gif(tmp_path, gif_path)
                                 with open(gif_path, "rb") as f:
                                     zf.writestr(f"{pack_name}/{i:03d}.gif", f.read())
-                                os.remove(gif_path)
+                                if os.path.exists(gif_path):
+                                    os.remove(gif_path)
                             finally:
                                 if os.path.exists(tmp_path):
                                     os.remove(tmp_path)
