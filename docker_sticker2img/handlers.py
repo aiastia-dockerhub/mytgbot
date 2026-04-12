@@ -14,6 +14,28 @@ from telegram.ext import ContextTypes
 logger = logging.getLogger(__name__)
 
 
+def _fix_gif_background(gif_path: str) -> None:
+    """修复 GIF 透明背景为白色，避免黑色背景"""
+    img = Image.open(gif_path)
+    frames = []
+    durations = []
+    try:
+        while True:
+            frame = img.convert("RGBA")
+            bg = Image.new("RGBA", frame.size, (255, 255, 255, 255))
+            bg.paste(frame, mask=frame.split()[3])
+            frames.append(bg.convert("RGB"))
+            durations.append(img.info.get("duration", 40))
+            img.seek(img.tell() + 1)
+    except EOFError:
+        pass
+    if frames:
+        frames[0].save(
+            gif_path, save_all=True, append_images=frames[1:],
+            duration=durations, loop=0, disposal=2,
+        )
+
+
 def _buf_to_jpg(buf: io.BytesIO) -> io.BytesIO:
     """将图像转为 JPG BytesIO"""
     buf.seek(0)
@@ -59,6 +81,7 @@ async def handle_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
             gif_path = tmp_path.replace(".tgs", ".gif")
             anim.save_animation(gif_path)
             anim.dispose()
+            _fix_gif_background(gif_path)
 
             # 发送 GIF 动图（可下载）
             with open(gif_path, "rb") as f:
@@ -92,6 +115,7 @@ async def handle_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
         clip = VideoFileClip(tmp_path)
         clip.write_gif(gif_path, logger=None)
         clip.close()
+        _fix_gif_background(gif_path)
         with open(gif_path, "rb") as f:
             # 发送 GIF 动图源文件（可下载）
             await message.reply_document(document=f, filename="sticker.gif")
@@ -165,6 +189,7 @@ async def handle_pack(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 gif_path = tmp_path.replace(".tgs", ".gif")
                                 anim.save_animation(gif_path)
                                 anim.dispose()
+                                _fix_gif_background(gif_path)
                                 with open(gif_path, "rb") as f:
                                     zf.writestr(f"{pack_name}/{i:03d}.gif", f.read())
                                 os.remove(gif_path)
@@ -189,6 +214,7 @@ async def handle_pack(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 clip = VideoFileClip(tmp_path)
                                 clip.write_gif(gif_path, logger=None)
                                 clip.close()
+                                _fix_gif_background(gif_path)
                                 with open(gif_path, "rb") as f:
                                     zf.writestr(f"{pack_name}/{i:03d}.gif", f.read())
                                 os.remove(gif_path)
