@@ -8,6 +8,10 @@ import qrcode_terminal # 需要安装此库：pip install qrcode-terminal
 import time
 import os
 
+# 网络配置
+REQUEST_TIMEOUT = 30       # 请求超时时间（秒）
+MAX_RETRIES = 3            # 最大重试次数
+
 # 配置
 TOKEN_FILE = "token.txt"
 AUTH_DEVICE_CODE_URL = "https://passportapi.115.com/open/authDeviceCode"
@@ -117,7 +121,8 @@ def get_initial_tokens_via_device_code(client_id: int):
                 "code_challenge": code_challenge,
                 "code_challenge_method": "sha256"
             },
-            headers={"Content-Type": "application/x-www-form-urlencoded"}
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=REQUEST_TIMEOUT
         )
         response.raise_for_status() # 对4xx或5xx响应抛出HTTPError
         auth_data = response.json()
@@ -159,7 +164,8 @@ def get_initial_tokens_via_device_code(client_id: int):
                     "uid": uid,
                     "time": time_val,
                     "sign": sign
-                }
+                },
+                timeout=REQUEST_TIMEOUT
             )
             status_resp.raise_for_status()
             status_data = status_resp.json()
@@ -179,7 +185,8 @@ def get_initial_tokens_via_device_code(client_id: int):
         except requests.exceptions.RequestException as e:
             print(f"轮询二维码状态时出错: {e}")
             if status_resp is not None: print(f"原始响应: {status_resp.text}")
-            return None
+            time.sleep(3)  # 网络错误时等待3秒后继续轮询，而不是直接返回
+            continue
         except json.JSONDecodeError:
             print(f"解析二维码状态响应时出错。原始数据: {status_resp.text}")
             return None
@@ -193,7 +200,8 @@ def get_initial_tokens_via_device_code(client_id: int):
                 "uid": uid,
                 "code_verifier": code_verifier
             },
-            headers={"Content-Type": "application/x-www-form-urlencoded"}
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=REQUEST_TIMEOUT
         )
         token_resp.raise_for_status()
         final_token_data = token_resp.json()
@@ -223,6 +231,7 @@ def refresh_existing_token(refresh_token_value: str):
     """
     使用refresh_token获取新的access_token。
     根据官方文档，此特定接口不需要client_id。
+    带重试和指数退避机制。
     返回: 包含新令牌数据的字典 (如果成功)，否则返回None。
     """
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
@@ -231,37 +240,53 @@ def refresh_existing_token(refresh_token_value: str):
     }
     
     print("\n--- 尝试刷新令牌 ---")
-    response = None
-    try:
-        response = requests.post(REFRESH_TOKEN_URL, headers=headers, data=data)
-        print(f"刷新API响应状态码: {response.status_code}")
-        response.raise_for_status() # 对4xx或5xx响应抛出HTTPError
-        
-        if not response.text or not response.text.strip(): # 检查空或只有空白字符的响应
-            print(f"错误: 从 {REFRESH_TOKEN_URL} 收到空或只有空白字符的响应体，尽管状态码为 {response.status_code}。")
-            return None
+    
+    for attempt in range(MAX_RETRIES):
+        response = None
+        try:
+            response = requests.post(REFRESH_TOKEN_URL, headers=headers, data=data, timeout=REQUEST_TIMEOUT)
+            print(f"刷新API响应状态码: {response.status_code}")
+            response.raise_for_status() # 对4xx或5xx响应抛出HTTPError
             
-        result = response.json()
-        print(f"刷新API响应JSON: {result}")
+            if not response.text or not response.text.strip(): # 检查空或只有空白字符的响应
+                print(f"错误: 从 {REFRESH_TOKEN_URL} 收到空或只有空白字符的响应体，尽管状态码为 {response.status_code}。")
+                if attempt < MAX_RETRIES - 1:
+                    wait = 2 ** attempt
+                    print(f"将在 {wait} 秒后重试 (第 {attempt + 2} 次)...")
+                    time.sleep(wait)
+                    continue
+                return None
+                
+            result = response.json()
+            print(f"刷新API响应JSON: {result}")
 
-        # 根据您提供的日志，刷新API的成功判断应基于 'code' 字段。
-        if result.get("code") == 0 and "data" in result:
-            print("令牌刷新成功!")
-            return result
-        else:
-            error_status = result.get('status', 'N/A') # 保留 status 作为错误信息的一部分
-            error_code = result.get('code', 'N/A') # 获取 code 字段
-            error_message = result.get('message', result.get('error', '未知错误'))
-            print(f"刷新令牌失败: 状态 {error_status}, 代码 {error_code}, 消息: {error_message}")
+            # 根据您提供的日志，刷新API的成功判断应基于 'code' 字段。
+            if result.get("code") == 0 and "data" in result:
+                print("令牌刷新成功!")
+                return result
+            else:
+                error_status = result.get('status', 'N/A') # 保留 status 作为错误信息的一部分
+                error_code = result.get('code', 'N/A') # 获取 code 字段
+                error_message = result.get('message', result.get('error', '未知错误'))
+                print(f"刷新令牌失败: 状态 {error_status}, 代码 {error_code}, 消息: {error_message}")
+                # API 返回明确错误（非网络问题），不重试
+                return None
+        except requests.exceptions.RequestException as e:
+            print(f"刷新期间请求失败或网络错误 (尝试 {attempt + 1}/{MAX_RETRIES}): {e}")
+            if response is not None: print(f"原始响应: {response.text}")
+            if attempt < MAX_RETRIES - 1:
+                wait = 2 ** attempt
+                print(f"将在 {wait} 秒后重试 (第 {attempt + 2} 次)...")
+                time.sleep(wait)
+            else:
+                print(f"刷新令牌在 {MAX_RETRIES} 次尝试后仍失败")
+                return None
+        except json.JSONDecodeError:
+            print(f"解析刷新API的JSON响应失败。")
+            if response is not None: print(f"原始响应 (导致JSONDecodeError): >>>{response.text}<<<")
             return None
-    except requests.exceptions.RequestException as e:
-        print(f"刷新期间请求失败或网络错误: {e}")
-        if response is not None: print(f"原始响应: {response.text}")
-        return None
-    except json.JSONDecodeError:
-        print(f"解析刷新API的JSON响应失败。")
-        if response is not None: print(f"原始响应 (导致JSONDecodeError): >>>{response.text}<<<")
-        return None
+    
+    return None
 
 # --- 令牌管理核心逻辑 ---
 
