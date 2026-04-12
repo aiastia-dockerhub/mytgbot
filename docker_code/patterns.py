@@ -14,6 +14,7 @@ PATTERN = re.compile(
     r'|(?:vi|pk|[dvp])_(?:FilesPan1Bot_)?[A-Za-z0-9_\-\+]+'
     r'|[A-Za-z0-9_\-\+]+=[^=\s]*?(?:_grp|_mda)(?=[\s\u4e00-\u9fa5]|$)'
     r'|@filepan_bot:([A-Za-z0-9_\-\+]+)'
+    r'|mtfxq2?bot_[A-Za-z0-9_\-\+]+'
     r')',
     re.IGNORECASE,
 )
@@ -61,6 +62,10 @@ TYPE_RULES: list[tuple[str, str | Callable]] = [
 
     # --- 新版本格式 d_/v_/p_（不含 FilesPan1Bot）---
     (r"^([dvp])_", lambda m: m.group(1) + "_new"),
+
+    # --- mtfxq2bot / mtfxqbot ---
+    (r"^mtfxq2bot_", "mtfxq2bot"),
+    (r"^mtfxqbot_", "mtfxqbot"),
 
     # --- _grp / _mda 后缀 → mediabk5bot ---
     (r"(_grp|_mda)$", "mediabk5bot"),
