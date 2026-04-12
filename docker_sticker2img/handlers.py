@@ -159,8 +159,9 @@ async def handle_pack(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pack_name = sticker_set.name
         stickers = sticker_set.stickers
 
-        is_animated = sticker_set.is_animated
-        is_video = sticker_set.is_video
+        # StickerSet 没有 is_animated/is_video，用第一个贴纸判断类型
+        is_animated = stickers[0].is_animated if stickers else False
+        is_video = stickers[0].is_video if stickers else False
 
         zip_buf = io.BytesIO()
 
