@@ -25,13 +25,19 @@ def _buf_to_jpg(buf: io.BytesIO) -> io.BytesIO:
 
 
 def _webm_to_gif(webm_path: str, gif_path: str) -> None:
-    """webm → GIF（调色板 + 白色背景填充透明区域）"""
-    subprocess.run([
-        "ffmpeg", "-y", "-i", webm_path,
-        "-vf", "split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse=dither=bayer:bayer_scale=3:alpha_color=white",
+    """webm → GIF（白色背景 + 高质量调色板）"""
+    result = subprocess.run([
+        "ffmpeg", "-y",
+        "-i", webm_path,
+        "-f", "lavfi", "-i", "color=c=white:s=512x512:d=999",
+        "-filter_complex",
+        "[0:v]format=rgba[s];[1:v][s]overlay=0:0:format=auto:shortest=1,split[s0][s1];[s0]palettegen=reserve_transparent=0[p];[s1][p]paletteuse",
         "-loop", "0",
         gif_path,
-    ], check=True, capture_output=True)
+    ], capture_output=True, text=True)
+    if result.returncode != 0:
+        logger.error("ffmpeg stderr: %s", result.stderr)
+        raise RuntimeError(f"ffmpeg 失败 (code={result.returncode})")
 
 
 async def handle_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
