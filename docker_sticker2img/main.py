@@ -3,9 +3,9 @@ import os
 import logging
 
 from telegram import Update
-from telegram.ext import Application, ApplicationBuilder, MessageHandler, filters
+from telegram.ext import Application, ApplicationBuilder, CommandHandler, MessageHandler, filters
 
-from handlers import handle_sticker
+from handlers import handle_pack, handle_sticker
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 async def post_init(application):
-    commands = [("start", "发送贴纸即可转为图片")]
+    commands = [("start", "发送贴纸即可转为图片"), ("pack", "回复贴纸下载整个表情包")]
     await application.bot.set_my_commands(commands)
     logger.info("Bot @%s 已启动", application.bot.username)
 
@@ -31,6 +31,7 @@ def main():
         return
 
     app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
+    app.add_handler(CommandHandler("pack", handle_pack))
     app.add_handler(MessageHandler(filters.Sticker.ALL, handle_sticker))
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 

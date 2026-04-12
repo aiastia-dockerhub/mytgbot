@@ -3,6 +3,7 @@ import io
 import logging
 import os
 import tempfile
+import zipfile
 
 from PIL import Image
 from moviepy.video.io.VideoFileClip import VideoFileClip
@@ -99,3 +100,121 @@ async def handle_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
         os.remove(tmp_path)
 
     buf.close()
+
+
+async def handle_pack(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """回复一个贴纸发送 /pack → 下载整个表情包为 ZIP"""
+    message = update.message
+
+    # 必须回复一个贴纸消息
+    if not message.reply_to_message or not message.reply_to_message.sticker:
+        await message.reply_text("❌ 请回复一个贴纸消息来使用 /pack 命令")
+        return
+
+    sticker = message.reply_to_message.sticker
+    sticker_set_name = sticker.set_name
+
+    if not sticker_set_name:
+        await message.reply_text("❌ 该贴纸不属于任何表情包")
+        return
+
+    status_msg = await message.reply_text("📦 正在下载表情包，请稍候...")
+
+    try:
+        # 获取表情包信息
+        sticker_set = await context.bot.get_sticker_set(sticker_set_name)
+        pack_name = sticker_set.name
+        stickers = sticker_set.stickers
+
+        is_animated = sticker_set.is_animated
+        is_video = sticker_set.is_video
+
+        # 创建 ZIP 到内存
+        zip_buf = io.BytesIO()
+
+        with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for i, stk in enumerate(stickers):
+                try:
+                    stk_file = await context.bot.get_file(stk.file_id)
+                    stk_buf = io.BytesIO()
+                    await stk_file.download_to_memory(out=stk_buf)
+
+                    if not is_animated and not is_video:
+                        # 静态贴纸 → PNG + JPG
+                        stk_buf.seek(0)
+                        zf.writestr(f"{pack_name}/{i:03d}.png", stk_buf.read())
+
+                        stk_buf.seek(0)
+                        img = Image.open(stk_buf).convert("RGB")
+                        jpg_buf = io.BytesIO()
+                        img.save(jpg_buf, format="JPEG", quality=95)
+                        zf.writestr(f"{pack_name}/{i:03d}.jpg", jpg_buf.getvalue())
+
+                    elif is_animated:
+                        # 动画贴纸 → TGS + 尝试转 GIF
+                        stk_buf.seek(0)
+                        zf.writestr(f"{pack_name}/{i:03d}.tgs", stk_buf.read())
+
+                        # 尝试转 GIF
+                        try:
+                            with tempfile.NamedTemporaryFile(suffix=".tgs", delete=False) as tmp:
+                                tmp.write(stk_buf.getvalue())
+                                tmp_path = tmp.name
+                            try:
+                                anim = LottieAnimation.from_tgs(tmp_path)
+                                gif_path = tmp_path.replace(".tgs", ".gif")
+                                anim.save_animation(gif_path)
+                                anim.dispose()
+                                with open(gif_path, "rb") as f:
+                                    zf.writestr(f"{pack_name}/{i:03d}.gif", f.read())
+                                os.remove(gif_path)
+                            finally:
+                                if os.path.exists(tmp_path):
+                                    os.remove(tmp_path)
+                        except Exception:
+                            logger.warning("贴纸 %d TGS 转 GIF 失败，跳过", i)
+
+                    else:
+                        # 视频贴纸 → webm + 尝试转 GIF
+                        stk_buf.seek(0)
+                        zf.writestr(f"{pack_name}/{i:03d}.webm", stk_buf.read())
+
+                        try:
+                            stk_buf.seek(0)
+                            with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as tmp:
+                                tmp.write(stk_buf.read())
+                                tmp_path = tmp.name
+                            try:
+                                gif_path = tmp_path.replace(".webm", ".gif")
+                                clip = VideoFileClip(tmp_path)
+                                clip.write_gif(gif_path, logger=None)
+                                clip.close()
+                                with open(gif_path, "rb") as f:
+                                    zf.writestr(f"{pack_name}/{i:03d}.gif", f.read())
+                                os.remove(gif_path)
+                            finally:
+                                os.remove(tmp_path)
+                        except Exception:
+                            logger.warning("贴纸 %d webm 转 GIF 失败，跳过", i)
+
+                except Exception:
+                    logger.warning("下载贴纸 %d 失败，跳过", i)
+                    continue
+
+        # 发送 ZIP 文件
+        zip_buf.seek(0)
+        zip_buf.name = f"{pack_name}.zip"
+        await message.reply_document(
+            document=zip_buf,
+            filename=f"{pack_name}.zip",
+            caption=f"📦 {sticker_set.title}（{len(stickers)} 个贴纸）",
+        )
+
+    except Exception:
+        logger.exception("下载表情包失败")
+        await message.reply_text("❌ 下载表情包失败，请稍后重试")
+    finally:
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
