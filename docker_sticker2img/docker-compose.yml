@@ -2,7 +2,6 @@ version: '3.8'
 
 services:
   sticker2img-bot:
-    build: .
     image: aiastia/mytgbot:sticker2img
     restart: unless-stopped
     environment:
