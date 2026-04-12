@@ -1,5 +1,6 @@
 """Commander Bot - 指挥官 Bot 入口"""
 import logging
+import re
 from functools import wraps
 
 from telegram import Update
@@ -29,6 +30,14 @@ logger = logging.getLogger(__name__)
 # 全局实例
 router = IntentRouter()
 manager = BotManager()
+
+
+# ==================== 工具函数 ====================
+def escape_markdown(text: str) -> str:
+    """转义 MarkdownV2 特殊字符"""
+    if not text:
+        return text
+    return re.sub(r'([_*\[\]()~`>#+\-=|{}.!\\])', r'\\\1', text)
 
 
 # ==================== 权限检查 ====================
@@ -186,8 +195,9 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         # 发送通知给用户
         await update.message.reply_text(
-            f"🔄 正在调用 @{bot_username} 处理...\n_原因: {reason}_",
-            parse_mode="Markdown",
+            f"🔄 正在调用 @{escape_markdown(bot_username)} 处理...\n"
+            f"_原因: {escape_markdown(reason)}_",
+            parse_mode="MarkdownV2",
         )
 
         # 发送到工作群
@@ -209,9 +219,8 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     else:
         await update.message.reply_text(
             f"🤔 无法确定你的意图。\n\n"
-            f"_原因: {reason}_\n\n"
+            f"原因: {reason}\n\n"
             f"你可以使用 /dispatch 命令手动指定 bot。",
-            parse_mode="Markdown",
         )
 
 
@@ -232,8 +241,7 @@ async def handle_sticker_message(update: Update, context: ContextTypes.DEFAULT_T
         bot_username = result.get("bot_username", "")
 
         await update.message.reply_text(
-            f"🔄 正在将贴纸转发给 @{bot_username} 处理...",
-            parse_mode="Markdown",
+            f"🔄 正在将贴纸转发给 @{bot_username} 处理..."
         )
 
         # 发送贴纸到工作群
@@ -273,7 +281,7 @@ async def handle_work_group_message(update: Update, context: ContextTypes.DEFAUL
     await manager.handle_bot_response(update, context)
 
 
-def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     """全局错误处理"""
     logger.error("异常: %s", context.error, exc_info=context.error)
 
