@@ -63,9 +63,10 @@ jobs:
             let totalDeleted = 0;
             let totalKept = 0;
 
-            for (const wf of workflows.data.workflows) {
-              if (wf.name === '清理 Actions 历史记录') continue;
+            // 当前运行 ID，避免删除正在执行的本条记录
+            const currentRunId = context.runId;
 
+            for (const wf of workflows.data.workflows) {
               const runs = await github.rest.actions.listWorkflowRuns({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -84,6 +85,8 @@ jobs:
               for (let i = 0; i < sorted.length; i++) {
                 if (i < keep_min_runs) { totalKept++; continue; }
                 const run = sorted[i];
+                // 跳过当前正在运行的本条记录，防止自毁
+                if (run.id === currentRunId) { totalKept++; continue; }
                 if (new Date(run.created_at) < cutoff) {
                   if (dry_run) {
                     console.log(`  [试运行] 将删除: ${run.name} #${run.run_number} (${run.created_at})`);
