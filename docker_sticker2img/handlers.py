@@ -2,7 +2,6 @@
 import io
 import logging
 import os
-import subprocess
 import tempfile
 import zipfile
 
@@ -22,15 +21,6 @@ def _buf_to_jpg(buf: io.BytesIO) -> io.BytesIO:
     img.save(jpg_buf, format="JPEG", quality=95)
     jpg_buf.seek(0)
     return jpg_buf
-
-
-def _webm_to_gif(webm_path: str, gif_path: str) -> None:
-    """webm → GIF（两阶段调色板，高质量）"""
-    subprocess.run([
-        "ffmpeg", "-y", "-i", webm_path,
-        "-vf", "fps=15,scale=300:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse",
-        gif_path,
-    ], check=True, capture_output=True)
 
 
 async def handle_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -63,7 +53,6 @@ async def handle_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
             anim = LottieAnimation.from_tgs(tmp_path)
             gif_path = tmp_path.replace(".tgs", ".gif")
             anim.save_animation(gif_path)
-            anim.dispose()
 
             # 发送 GIF 动图
             try:
@@ -85,34 +74,9 @@ async def handle_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buf.close()
         return
 
-    # ===== 视频贴纸（webm）→ webm + GIF =====
-    # 发送原始 webm 文件
+    # ===== 视频贴纸（webm）→ 直接发送 webm =====
     buf.name = "sticker.webm"
     await message.reply_document(document=buf, filename="sticker.webm")
-
-    # 转为 GIF
-    buf.seek(0)
-    with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as tmp:
-        tmp.write(buf.read())
-        tmp_path = tmp.name
-    try:
-        gif_path = tmp_path.replace(".webm", ".gif")
-        _webm_to_gif(tmp_path, gif_path)
-
-        # 发送 GIF 动图
-        try:
-            with open(gif_path, "rb") as f:
-                await message.reply_document(document=f, filename="sticker.gif")
-        except Exception:
-            logger.warning("发送 GIF 失败", exc_info=True)
-
-        if os.path.exists(gif_path):
-            os.remove(gif_path)
-    except Exception:
-        logger.exception("webm 转换失败")
-    finally:
-        os.remove(tmp_path)
-
     buf.close()
 
 
@@ -174,7 +138,6 @@ async def handle_pack(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 anim = LottieAnimation.from_tgs(tmp_path)
                                 gif_path = tmp_path.replace(".tgs", ".gif")
                                 anim.save_animation(gif_path)
-                                anim.dispose()
                                 with open(gif_path, "rb") as f:
                                     zf.writestr(f"{pack_name}/{i:03d}.gif", f.read())
                                 os.remove(gif_path)
@@ -185,25 +148,9 @@ async def handle_pack(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             logger.warning("贴纸 %d TGS 转换失败，跳过", i)
 
                     else:
-                        # 视频贴纸 → webm + GIF
+                        # 视频贴纸 → webm
                         stk_buf.seek(0)
                         zf.writestr(f"{pack_name}/{i:03d}.webm", stk_buf.read())
-
-                        try:
-                            stk_buf.seek(0)
-                            with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as tmp:
-                                tmp.write(stk_buf.read())
-                                tmp_path = tmp.name
-                            try:
-                                gif_path = tmp_path.replace(".webm", ".gif")
-                                _webm_to_gif(tmp_path, gif_path)
-                                with open(gif_path, "rb") as f:
-                                    zf.writestr(f"{pack_name}/{i:03d}.gif", f.read())
-                                os.remove(gif_path)
-                            finally:
-                                os.remove(tmp_path)
-                        except Exception:
-                            logger.warning("贴纸 %d webm 转换失败，跳过", i)
 
                 except Exception:
                     logger.warning("下载贴纸 %d 失败，跳过", i)
