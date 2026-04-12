@@ -2,38 +2,16 @@
 import io
 import logging
 import os
+import subprocess
 import tempfile
 import zipfile
 
 from PIL import Image
-from moviepy.video.io.VideoFileClip import VideoFileClip
 from rlottie_python import LottieAnimation
 from telegram import Update
 from telegram.ext import ContextTypes
 
 logger = logging.getLogger(__name__)
-
-
-def _fix_gif_background(gif_path: str) -> None:
-    """修复 GIF 透明背景为白色，避免黑色背景"""
-    img = Image.open(gif_path)
-    frames = []
-    durations = []
-    try:
-        while True:
-            frame = img.convert("RGBA")
-            bg = Image.new("RGBA", frame.size, (255, 255, 255, 255))
-            bg.paste(frame, mask=frame.split()[3])
-            frames.append(bg.convert("RGB"))
-            durations.append(img.info.get("duration", 40))
-            img.seek(img.tell() + 1)
-    except EOFError:
-        pass
-    if frames:
-        frames[0].save(
-            gif_path, save_all=True, append_images=frames[1:],
-            duration=durations, loop=0, disposal=2,
-        )
 
 
 def _buf_to_jpg(buf: io.BytesIO) -> io.BytesIO:
@@ -69,27 +47,31 @@ async def handle_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buf.close()
         return
 
-    # ===== 动画贴纸（TGS）→ GIF + TGS 源文件 =====
+    # ===== 动画贴纸（TGS）→ GIF + WebP + TGS 源文件 =====
     if sticker.is_animated and not sticker.is_video:
-        # 保存 TGS 到临时文件
         with tempfile.NamedTemporaryFile(suffix=".tgs", delete=False) as tmp:
             tmp.write(buf.getvalue())
             tmp_path = tmp.name
         try:
             anim = LottieAnimation.from_tgs(tmp_path)
-            # 生成 GIF
             gif_path = tmp_path.replace(".tgs", ".gif")
+            webp_path = tmp_path.replace(".tgs", ".webp")
             anim.save_animation(gif_path)
+            anim.save_animation(webp_path)
             anim.dispose()
-            _fix_gif_background(gif_path)
 
-            # 发送 GIF 动图（可下载）
+            # 发送 GIF 动图
             with open(gif_path, "rb") as f:
                 await message.reply_document(document=f, filename="sticker.gif")
 
+            # 发送 WebP 动图
+            with open(webp_path, "rb") as f:
+                await message.reply_document(document=f, filename="sticker.webp")
+
             os.remove(gif_path)
+            os.remove(webp_path)
         except Exception:
-            logger.exception("TGS 转 GIF 失败")
+            logger.exception("TGS 转换失败")
         finally:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
@@ -100,26 +82,47 @@ async def handle_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buf.close()
         return
 
-    # ===== 视频贴纸（webm）→ webm + GIF =====
+    # ===== 视频贴纸（webm）→ webm + GIF + WebP =====
     # 发送原始 webm 文件
     buf.name = "sticker.webm"
     await message.reply_document(document=buf, filename="sticker.webm")
 
-    # 转为 GIF 动图
+    # 转为 GIF 和 WebP
     buf.seek(0)
     with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as tmp:
         tmp.write(buf.read())
         tmp_path = tmp.name
     try:
         gif_path = tmp_path.replace(".webm", ".gif")
-        clip = VideoFileClip(tmp_path)
-        clip.write_gif(gif_path, logger=None)
-        clip.close()
-        _fix_gif_background(gif_path)
+        webp_path = tmp_path.replace(".webm", ".webp")
+
+        # webm → GIF（ffmpeg）
+        subprocess.run([
+            "ffmpeg", "-y", "-i", tmp_path,
+            "-loop", "0", gif_path,
+        ], check=True, capture_output=True)
+
+        # webm → WebP（ffmpeg，保留透明通道）
+        subprocess.run([
+            "ffmpeg", "-y", "-i", tmp_path,
+            "-vcodec", "libwebp", "-lossless", "0",
+            "-compression_level", "4", "-loop", "0",
+            "-preset", "default", "-an", "-vsync", "0",
+            webp_path,
+        ], check=True, capture_output=True)
+
+        # 发送 GIF 动图
         with open(gif_path, "rb") as f:
-            # 发送 GIF 动图源文件（可下载）
             await message.reply_document(document=f, filename="sticker.gif")
+
+        # 发送 WebP 动图
+        with open(webp_path, "rb") as f:
+            await message.reply_document(document=f, filename="sticker.webp")
+
         os.remove(gif_path)
+        os.remove(webp_path)
+    except Exception:
+        logger.exception("webm 转换失败")
     finally:
         os.remove(tmp_path)
 
@@ -175,11 +178,10 @@ async def handle_pack(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         zf.writestr(f"{pack_name}/{i:03d}.jpg", jpg_buf.getvalue())
 
                     elif is_animated:
-                        # 动画贴纸 → TGS + 尝试转 GIF
+                        # 动画贴纸 → TGS + GIF + WebP
                         stk_buf.seek(0)
                         zf.writestr(f"{pack_name}/{i:03d}.tgs", stk_buf.read())
 
-                        # 尝试转 GIF
                         try:
                             with tempfile.NamedTemporaryFile(suffix=".tgs", delete=False) as tmp:
                                 tmp.write(stk_buf.getvalue())
@@ -187,20 +189,24 @@ async def handle_pack(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             try:
                                 anim = LottieAnimation.from_tgs(tmp_path)
                                 gif_path = tmp_path.replace(".tgs", ".gif")
+                                webp_path = tmp_path.replace(".tgs", ".webp")
                                 anim.save_animation(gif_path)
+                                anim.save_animation(webp_path)
                                 anim.dispose()
-                                _fix_gif_background(gif_path)
                                 with open(gif_path, "rb") as f:
                                     zf.writestr(f"{pack_name}/{i:03d}.gif", f.read())
+                                with open(webp_path, "rb") as f:
+                                    zf.writestr(f"{pack_name}/{i:03d}.webp", f.read())
                                 os.remove(gif_path)
+                                os.remove(webp_path)
                             finally:
                                 if os.path.exists(tmp_path):
                                     os.remove(tmp_path)
                         except Exception:
-                            logger.warning("贴纸 %d TGS 转 GIF 失败，跳过", i)
+                            logger.warning("贴纸 %d TGS 转换失败，跳过", i)
 
                     else:
-                        # 视频贴纸 → webm + 尝试转 GIF
+                        # 视频贴纸 → webm + GIF + WebP
                         stk_buf.seek(0)
                         zf.writestr(f"{pack_name}/{i:03d}.webm", stk_buf.read())
 
@@ -211,17 +217,28 @@ async def handle_pack(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 tmp_path = tmp.name
                             try:
                                 gif_path = tmp_path.replace(".webm", ".gif")
-                                clip = VideoFileClip(tmp_path)
-                                clip.write_gif(gif_path, logger=None)
-                                clip.close()
-                                _fix_gif_background(gif_path)
+                                webp_path = tmp_path.replace(".webm", ".webp")
+                                subprocess.run([
+                                    "ffmpeg", "-y", "-i", tmp_path,
+                                    "-loop", "0", gif_path,
+                                ], check=True, capture_output=True)
+                                subprocess.run([
+                                    "ffmpeg", "-y", "-i", tmp_path,
+                                    "-vcodec", "libwebp", "-lossless", "0",
+                                    "-compression_level", "4", "-loop", "0",
+                                    "-preset", "default", "-an", "-vsync", "0",
+                                    webp_path,
+                                ], check=True, capture_output=True)
                                 with open(gif_path, "rb") as f:
                                     zf.writestr(f"{pack_name}/{i:03d}.gif", f.read())
+                                with open(webp_path, "rb") as f:
+                                    zf.writestr(f"{pack_name}/{i:03d}.webp", f.read())
                                 os.remove(gif_path)
+                                os.remove(webp_path)
                             finally:
                                 os.remove(tmp_path)
                         except Exception:
-                            logger.warning("贴纸 %d webm 转 GIF 失败，跳过", i)
+                            logger.warning("贴纸 %d webm 转换失败，跳过", i)
 
                 except Exception:
                     logger.warning("下载贴纸 %d 失败，跳过", i)
