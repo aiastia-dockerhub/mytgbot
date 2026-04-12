@@ -43,7 +43,9 @@ def escape_markdown(text: str) -> str:
 async def forward_response_to_user(update: Update, bot_username: str):
     """将 bot 的回复（含媒体）转发给用户，支持多条消息"""
     messages = manager.pop_response_message(bot_username)
+    logger.info("forward_response_to_user: bot=%s, messages=%s", bot_username, type(messages).__name__ if messages else "None")
     if messages is None:
+        logger.warning("forward_response_to_user: 没有缓存的消息可以转发！bot=%s", bot_username)
         return False
 
     # 如果是单条消息，转为列表统一处理
@@ -54,6 +56,11 @@ async def forward_response_to_user(update: Update, bot_username: str):
     forwarded_any = False
 
     for i, msg in enumerate(messages):
+        logger.info(
+            "转发第 %d 条消息: photo=%s, document=%s, video=%s, animation=%s, sticker=%s, text=%s",
+            i, bool(msg.photo), bool(msg.document), bool(msg.video),
+            bool(msg.animation), bool(msg.sticker), bool(msg.text),
+        )
         if msg.photo:
             photo = msg.photo[-1]
             caption = msg.caption or (f"✅ @{bot_username}" if i == 0 else None)
@@ -93,7 +100,10 @@ async def forward_response_to_user(update: Update, bot_username: str):
                 sticker=msg.sticker.file_id,
             )
             forwarded_any = True
+        else:
+            logger.info("第 %d 条消息无媒体，跳过", i)
 
+    logger.info("forward_response_to_user 完成: forwarded_any=%s", forwarded_any)
     return forwarded_any
 
 

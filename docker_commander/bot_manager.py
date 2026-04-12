@@ -179,6 +179,11 @@ class BotManager:
             await asyncio.sleep(2)
             # 获取缓存的响应文本
             response = self._response_cache.pop(bot_username, None)
+            msgs = self._response_message_cache.get(bot_username, [])
+            logger.info(
+                "wait_for_response 返回: bot=%s, response=%s, 收集到 %d 条消息",
+                bot_username, repr(response[:100]) if response else None, len(msgs),
+            )
             return response
         except asyncio.TimeoutError:
             logger.warning("等待 @%s 回复超时 (%ds)", bot_username, timeout)
@@ -191,7 +196,11 @@ class BotManager:
 
     def pop_response_message(self, bot_username: str):
         """获取并清除缓存的响应消息对象列表（用于转发媒体）"""
-        return self._response_message_cache.pop(bot_username, None)
+        msgs = self._response_message_cache.pop(bot_username, None)
+        logger.info("pop_response_message: bot=%s, msgs=%s", bot_username, type(msgs).__name__ if msgs else None)
+        if msgs:
+            logger.info("  消息数量: %d", len(msgs) if isinstance(msgs, list) else 1)
+        return msgs
 
     async def handle_bot_response(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
@@ -234,6 +243,10 @@ class BotManager:
         )
 
         # 如果有等待此 bot 响应的任务，收集所有响应
+        logger.info(
+            "检查等待列表: bot_username=%s, pending_bots=%s",
+            bot_username, list(self._pending_responses.keys()),
+        )
         if bot_username in self._pending_responses:
             self._response_cache[bot_username] = response_text
             # 存储完整的 message 对象列表，用于转发所有媒体
