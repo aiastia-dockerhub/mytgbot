@@ -3,7 +3,7 @@ import io
 import os
 import tempfile
 
-from moviepy.editor import VideoFileClip
+from moviepy.video.io.VideoFileClip import VideoFileClip
 from telegram import Update
 from telegram.ext import ContextTypes
 
