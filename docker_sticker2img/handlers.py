@@ -2,6 +2,7 @@
 import io
 import logging
 import os
+import shutil
 import subprocess
 import tempfile
 import zipfile
@@ -22,6 +23,35 @@ def _buf_to_jpg(buf: io.BytesIO) -> io.BytesIO:
     img.save(jpg_buf, format="JPEG", quality=95)
     jpg_buf.seek(0)
     return jpg_buf
+
+
+def _tgs_to_webp(tgs_path: str, webp_path: str) -> None:
+    """TGS → 逐帧渲染 RGBA PNG → ffmpeg 合成动态 WebP（保留透明通道）"""
+    anim = LottieAnimation.from_tgs(tgs_path)
+    total_frames = anim.lottie_animation_get_totalframe()
+    fps = anim.lottie_animation_get_framerate() or 30
+
+    frames_dir = tempfile.mkdtemp()
+    try:
+        for frame_num in range(total_frames):
+            frame = anim.render_pillow_frame(frame_num=frame_num)
+            frame.save(os.path.join(frames_dir, f"frame_{frame_num:04d}.png"))
+        anim.dispose()
+
+        subprocess.run([
+            "ffmpeg", "-y",
+            "-framerate", str(fps),
+            "-i", os.path.join(frames_dir, "frame_%04d.png"),
+            "-vcodec", "libwebp",
+            "-lossless", "1",
+            "-compression_level", "4",
+            "-loop", "0",
+            "-preset", "default",
+            "-an",
+            webp_path,
+        ], check=True, capture_output=True)
+    finally:
+        shutil.rmtree(frames_dir, ignore_errors=True)
 
 
 async def handle_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -55,21 +85,28 @@ async def handle_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             anim = LottieAnimation.from_tgs(tmp_path)
             gif_path = tmp_path.replace(".tgs", ".gif")
-            webp_path = tmp_path.replace(".tgs", ".webp")
             anim.save_animation(gif_path)
-            anim.save_animation(webp_path)
             anim.dispose()
+
+            # TGS → WebP（逐帧渲染，保留透明通道）
+            webp_path = tmp_path.replace(".tgs", ".webp")
+            try:
+                _tgs_to_webp(tmp_path, webp_path)
+            except Exception:
+                logger.warning("TGS 转 WebP 失败", exc_info=True)
+                webp_path = None
 
             # 发送 GIF 动图
             with open(gif_path, "rb") as f:
                 await message.reply_document(document=f, filename="sticker.gif")
+            os.remove(gif_path)
 
             # 发送 WebP 动图
-            with open(webp_path, "rb") as f:
-                await message.reply_document(document=f, filename="sticker.webp")
+            if webp_path and os.path.exists(webp_path):
+                with open(webp_path, "rb") as f:
+                    await message.reply_document(document=f, filename="sticker.webp")
+                os.remove(webp_path)
 
-            os.remove(gif_path)
-            os.remove(webp_path)
         except Exception:
             logger.exception("TGS 转换失败")
         finally:
@@ -102,10 +139,10 @@ async def handle_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "-loop", "0", gif_path,
         ], check=True, capture_output=True)
 
-        # webm → WebP（ffmpeg，保留透明通道）
+        # webm → WebP（ffmpeg，lossless 保留透明通道）
         subprocess.run([
             "ffmpeg", "-y", "-i", tmp_path,
-            "-vcodec", "libwebp", "-lossless", "0",
+            "-vcodec", "libwebp", "-lossless", "1",
             "-compression_level", "4", "-loop", "0",
             "-preset", "default", "-an", "-vsync", "0",
             webp_path,
@@ -189,16 +226,21 @@ async def handle_pack(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             try:
                                 anim = LottieAnimation.from_tgs(tmp_path)
                                 gif_path = tmp_path.replace(".tgs", ".gif")
-                                webp_path = tmp_path.replace(".tgs", ".webp")
                                 anim.save_animation(gif_path)
-                                anim.save_animation(webp_path)
                                 anim.dispose()
                                 with open(gif_path, "rb") as f:
                                     zf.writestr(f"{pack_name}/{i:03d}.gif", f.read())
-                                with open(webp_path, "rb") as f:
-                                    zf.writestr(f"{pack_name}/{i:03d}.webp", f.read())
                                 os.remove(gif_path)
-                                os.remove(webp_path)
+
+                                # TGS → WebP
+                                webp_path = tmp_path.replace(".tgs", ".webp")
+                                try:
+                                    _tgs_to_webp(tmp_path, webp_path)
+                                    with open(webp_path, "rb") as f:
+                                        zf.writestr(f"{pack_name}/{i:03d}.webp", f.read())
+                                    os.remove(webp_path)
+                                except Exception:
+                                    logger.warning("贴纸 %d TGS 转 WebP 失败，跳过", i)
                             finally:
                                 if os.path.exists(tmp_path):
                                     os.remove(tmp_path)
@@ -224,7 +266,7 @@ async def handle_pack(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 ], check=True, capture_output=True)
                                 subprocess.run([
                                     "ffmpeg", "-y", "-i", tmp_path,
-                                    "-vcodec", "libwebp", "-lossless", "0",
+                                    "-vcodec", "libwebp", "-lossless", "1",
                                     "-compression_level", "4", "-loop", "0",
                                     "-preset", "default", "-an", "-vsync", "0",
                                     webp_path,
