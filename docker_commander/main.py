@@ -41,49 +41,60 @@ def escape_markdown(text: str) -> str:
 
 
 async def forward_response_to_user(update: Update, bot_username: str):
-    """将 bot 的回复（含媒体）转发给用户"""
-    msg = manager.pop_response_message(bot_username)
-    if msg is None:
+    """将 bot 的回复（含媒体）转发给用户，支持多条消息"""
+    messages = manager.pop_response_message(bot_username)
+    if messages is None:
         return False
 
+    # 如果是单条消息，转为列表统一处理
+    if not isinstance(messages, list):
+        messages = [messages]
+
     chat_id = update.effective_chat.id
+    forwarded_any = False
 
-    # 优先转发媒体内容
-    if msg.photo:
-        # 取最大尺寸的图片
-        photo = msg.photo[-1]
-        await update.message.bot.send_photo(
-            chat_id=chat_id,
-            photo=photo.file_id,
-            caption=msg.caption or f"✅ @{bot_username}",
-        )
-    elif msg.document:
-        await update.message.bot.send_document(
-            chat_id=chat_id,
-            document=msg.document.file_id,
-            caption=msg.caption or f"✅ @{bot_username}",
-        )
-    elif msg.video:
-        await update.message.bot.send_video(
-            chat_id=chat_id,
-            video=msg.video.file_id,
-            caption=msg.caption or f"✅ @{bot_username}",
-        )
-    elif msg.animation:
-        await update.message.bot.send_animation(
-            chat_id=chat_id,
-            animation=msg.animation.file_id,
-            caption=msg.caption or f"✅ @{bot_username}",
-        )
-    elif msg.sticker:
-        await update.message.bot.send_sticker(
-            chat_id=chat_id,
-            sticker=msg.sticker.file_id,
-        )
-    else:
-        return False  # 纯文本，由调用方处理
+    for i, msg in enumerate(messages):
+        if msg.photo:
+            photo = msg.photo[-1]
+            caption = msg.caption or (f"✅ @{bot_username}" if i == 0 else None)
+            await update.message.bot.send_photo(
+                chat_id=chat_id,
+                photo=photo.file_id,
+                caption=caption,
+            )
+            forwarded_any = True
+        elif msg.document:
+            caption = msg.caption or (f"✅ @{bot_username}" if i == 0 and not forwarded_any else None)
+            await update.message.bot.send_document(
+                chat_id=chat_id,
+                document=msg.document.file_id,
+                caption=caption,
+            )
+            forwarded_any = True
+        elif msg.video:
+            caption = msg.caption or (f"✅ @{bot_username}" if i == 0 else None)
+            await update.message.bot.send_video(
+                chat_id=chat_id,
+                video=msg.video.file_id,
+                caption=caption,
+            )
+            forwarded_any = True
+        elif msg.animation:
+            caption = msg.caption or (f"✅ @{bot_username}" if i == 0 else None)
+            await update.message.bot.send_animation(
+                chat_id=chat_id,
+                animation=msg.animation.file_id,
+                caption=caption,
+            )
+            forwarded_any = True
+        elif msg.sticker:
+            await update.message.bot.send_sticker(
+                chat_id=chat_id,
+                sticker=msg.sticker.file_id,
+            )
+            forwarded_any = True
 
-    return True
+    return forwarded_any
 
 
 # ==================== 权限检查 ====================
@@ -301,8 +312,8 @@ async def handle_sticker_message(update: Update, context: ContextTypes.DEFAULT_T
         )
 
         if msg_id:
-            # 等待响应
-            response = await manager.wait_for_response(context, bot_username)
+            # 等待响应（贴纸转换需要较长时间，使用120秒超时）
+            response = await manager.wait_for_response(context, bot_username, timeout=120)
             if response:
                 # 尝试转发媒体内容（图片/文件等）
                 forwarded = await forward_response_to_user(update, bot_username)

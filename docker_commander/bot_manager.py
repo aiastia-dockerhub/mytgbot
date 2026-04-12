@@ -112,6 +112,13 @@ class BotManager:
                     chat_id=WORK_GROUP_ID,
                     sticker=sticker_file_id,
                 )
+                # 发送 @提及回复贴纸，确保子 bot 在隐私模式下也能感知
+                # bot 收到 @mention 后可通过 reply_to_message 获取贴纸
+                await context.bot.send_message(
+                    chat_id=WORK_GROUP_ID,
+                    text=f"@{bot_username}",
+                    reply_to_message_id=msg.message_id,
+                )
             else:
                 # 发送命令到工作群，使用 @bot_username 格式
                 # 如果 command 已经是 /command 格式，追加 @bot_username
@@ -167,18 +174,23 @@ class BotManager:
 
         try:
             await asyncio.wait_for(event.wait(), timeout=timeout)
+            # 等一小段时间，让 bot 发送的所有回复消息都被收集
+            # （例如 sticker2img 会发送多条消息：photo + document）
+            await asyncio.sleep(2)
             # 获取缓存的响应文本
             response = self._response_cache.pop(bot_username, None)
             return response
         except asyncio.TimeoutError:
             logger.warning("等待 @%s 回复超时 (%ds)", bot_username, timeout)
+            # 超时后清理
+            self._response_message_cache.pop(bot_username, None)
             return None
         finally:
             self._pending_responses.pop(bot_username, None)
             self._decrement_depth(bot_username)
 
     def pop_response_message(self, bot_username: str):
-        """获取并清除缓存的响应消息对象（用于转发媒体）"""
+        """获取并清除缓存的响应消息对象列表（用于转发媒体）"""
         return self._response_message_cache.pop(bot_username, None)
 
     async def handle_bot_response(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -221,11 +233,13 @@ class BotManager:
             bot_username, response_type, response_text[:200],
         )
 
-        # 如果有等待此 bot 响应的任务，触发事件
+        # 如果有等待此 bot 响应的任务，收集所有响应
         if bot_username in self._pending_responses:
             self._response_cache[bot_username] = response_text
-            # 存储完整的 message 对象，用于转发媒体
-            self._response_message_cache[bot_username] = message
+            # 存储完整的 message 对象列表，用于转发所有媒体
+            if bot_username not in self._response_message_cache:
+                self._response_message_cache[bot_username] = []
+            self._response_message_cache[bot_username].append(message)
             event, _ = self._pending_responses[bot_username]
             event.set()
 
