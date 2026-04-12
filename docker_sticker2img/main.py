@@ -4,6 +4,7 @@ import logging
 
 from telegram import Update
 from telegram.ext import Application, ApplicationBuilder, CommandHandler, MessageHandler, filters
+from telegram.request import HTTPXRequest
 
 from handlers import handle_pack, handle_sticker
 
@@ -30,7 +31,8 @@ def main():
         print("❌ 请设置 BOT_TOKEN 环境变量")
         return
 
-    app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
+    request = HTTPXRequest(connect_timeout=30.0, read_timeout=120.0, write_timeout=120.0)
+    app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).request(request).build()
     app.add_handler(CommandHandler("pack", handle_pack))
     app.add_handler(MessageHandler(filters.Sticker.ALL, handle_sticker))
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)

@@ -43,8 +43,9 @@ def _tgs_to_webp(tgs_path: str, webp_path: str) -> None:
             "-framerate", str(fps),
             "-i", os.path.join(frames_dir, "frame_%04d.png"),
             "-vcodec", "libwebp",
-            "-lossless", "1",
+            "-lossless", "0",
             "-compression_level", "4",
+            "-quality", "75",
             "-loop", "0",
             "-preset", "default",
             "-an",
@@ -97,14 +98,20 @@ async def handle_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 webp_path = None
 
             # 发送 GIF 动图
-            with open(gif_path, "rb") as f:
-                await message.reply_document(document=f, filename="sticker.gif")
+            try:
+                with open(gif_path, "rb") as f:
+                    await message.reply_document(document=f, filename="sticker.gif")
+            except Exception:
+                logger.warning("发送 GIF 失败", exc_info=True)
             os.remove(gif_path)
 
             # 发送 WebP 动图
             if webp_path and os.path.exists(webp_path):
-                with open(webp_path, "rb") as f:
-                    await message.reply_document(document=f, filename="sticker.webp")
+                try:
+                    with open(webp_path, "rb") as f:
+                        await message.reply_document(document=f, filename="sticker.webp")
+                except Exception:
+                    logger.warning("发送 WebP 失败", exc_info=True)
                 os.remove(webp_path)
 
         except Exception:
@@ -139,25 +146,33 @@ async def handle_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "-loop", "0", gif_path,
         ], check=True, capture_output=True)
 
-        # webm → WebP（ffmpeg，lossless 保留透明通道）
+        # webm → WebP（ffmpeg，lossy 压缩保留透明通道）
         subprocess.run([
             "ffmpeg", "-y", "-i", tmp_path,
-            "-vcodec", "libwebp", "-lossless", "1",
-            "-compression_level", "4", "-loop", "0",
-            "-preset", "default", "-an", "-vsync", "0",
+            "-vcodec", "libwebp", "-lossless", "0",
+            "-compression_level", "4", "-quality", "75",
+            "-loop", "0", "-preset", "default", "-an", "-vsync", "0",
             webp_path,
         ], check=True, capture_output=True)
 
         # 发送 GIF 动图
-        with open(gif_path, "rb") as f:
-            await message.reply_document(document=f, filename="sticker.gif")
+        try:
+            with open(gif_path, "rb") as f:
+                await message.reply_document(document=f, filename="sticker.gif")
+        except Exception:
+            logger.warning("发送 GIF 失败", exc_info=True)
 
         # 发送 WebP 动图
-        with open(webp_path, "rb") as f:
-            await message.reply_document(document=f, filename="sticker.webp")
+        try:
+            with open(webp_path, "rb") as f:
+                await message.reply_document(document=f, filename="sticker.webp")
+        except Exception:
+            logger.warning("发送 WebP 失败", exc_info=True)
 
-        os.remove(gif_path)
-        os.remove(webp_path)
+        if os.path.exists(gif_path):
+            os.remove(gif_path)
+        if os.path.exists(webp_path):
+            os.remove(webp_path)
     except Exception:
         logger.exception("webm 转换失败")
     finally:
@@ -266,9 +281,9 @@ async def handle_pack(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 ], check=True, capture_output=True)
                                 subprocess.run([
                                     "ffmpeg", "-y", "-i", tmp_path,
-                                    "-vcodec", "libwebp", "-lossless", "1",
-                                    "-compression_level", "4", "-loop", "0",
-                                    "-preset", "default", "-an", "-vsync", "0",
+                                    "-vcodec", "libwebp", "-lossless", "0",
+                                    "-compression_level", "4", "-quality", "75",
+                                    "-loop", "0", "-preset", "default", "-an", "-vsync", "0",
                                     webp_path,
                                 ], check=True, capture_output=True)
                                 with open(gif_path, "rb") as f:
