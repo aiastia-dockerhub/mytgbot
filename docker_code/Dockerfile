@@ -16,7 +16,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN mkdir -p /app/data
 
 # 复制应用代码
-COPY tg_bot.py .
+COPY *.py .
 
 # 设置持久化数据卷
 VOLUME ["/app/data"]
