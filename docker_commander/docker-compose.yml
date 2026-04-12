@@ -15,6 +15,12 @@ services:
       - LLM_API_URL=${LLM_API_URL}
       - LLM_API_KEY=${LLM_API_KEY}
       - LLM_MODEL=${LLM_MODEL:-gpt-4o-mini}
+      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-512}
+      - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.3}
+      - RATE_LIMIT_PER_BOT=${RATE_LIMIT_PER_BOT:-1.0}
+      - MAX_INTERACTION_DEPTH=${MAX_INTERACTION_DEPTH:-5}
+      - RESPONSE_TIMEOUT=${RESPONSE_TIMEOUT:-30}
+      - DEDUP_WINDOW=${DEDUP_WINDOW:-60}
     logging:
       options:
         max-size: "10m"
