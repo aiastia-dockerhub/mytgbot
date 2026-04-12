@@ -2,11 +2,11 @@
 import io
 import logging
 import os
-import subprocess
 import tempfile
 import zipfile
 
 from PIL import Image
+from moviepy import VideoFileClip, ColorClip, CompositeVideoClip
 from rlottie_python import LottieAnimation
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -25,19 +25,13 @@ def _buf_to_jpg(buf: io.BytesIO) -> io.BytesIO:
 
 
 def _webm_to_gif(webm_path: str, gif_path: str) -> None:
-    """webm → GIF（白色背景 + 高质量调色板）"""
-    result = subprocess.run([
-        "ffmpeg", "-y",
-        "-i", webm_path,
-        "-f", "lavfi", "-i", "color=c=white:s=512x512:d=999",
-        "-filter_complex",
-        "[0:v]format=rgba[s];[1:v][s]overlay=0:0:format=auto:shortest=1,split[s0][s1];[s0]palettegen=reserve_transparent=0[p];[s1][p]paletteuse",
-        "-loop", "0",
-        gif_path,
-    ], capture_output=True, text=True)
-    if result.returncode != 0:
-        logger.error("ffmpeg stderr: %s", result.stderr)
-        raise RuntimeError(f"ffmpeg 失败 (code={result.returncode})")
+    """webm → GIF（moviepy 白色背景合成）"""
+    clip = VideoFileClip(webm_path, has_mask=True)
+    # 创建白色背景
+    bg = ColorClip(size=clip.size, color=(255, 255, 255), duration=clip.duration)
+    # 合成：白色背景 + 贴纸叠加
+    final = CompositeVideoClip([bg, clip.with_position("center")])
+    final.write_gif(gif_path, fps=15, logger=None)
 
 
 async def handle_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
