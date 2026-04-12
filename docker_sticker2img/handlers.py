@@ -25,6 +25,27 @@ def _buf_to_jpg(buf: io.BytesIO) -> io.BytesIO:
     return jpg_buf
 
 
+def _webm_to_gif(webm_path: str, gif_path: str) -> None:
+    """webm → GIF（两阶段调色板 + 白色背景）"""
+    palette_path = webm_path + ".palette.png"
+    try:
+        # 阶段1: 生成调色板（白色背景）
+        subprocess.run([
+            "ffmpeg", "-y", "-i", webm_path,
+            "-vf", "fps=15,scale=300:-1:flags=lanczos,format=rgba,drawbox=color=white@1:t=fill,palettegen",
+            palette_path,
+        ], check=True, capture_output=True)
+        # 阶段2: 使用调色板生成 GIF（白色背景）
+        subprocess.run([
+            "ffmpeg", "-y", "-i", webm_path, "-i", palette_path,
+            "-filter_complex", "fps=15,scale=300:-1:flags=lanczos,format=rgba,drawbox=color=white@1:t=fill[x];[x][1:v]paletteuse",
+            gif_path,
+        ], check=True, capture_output=True)
+    finally:
+        if os.path.exists(palette_path):
+            os.remove(palette_path)
+
+
 def _tgs_to_webp(tgs_path: str, webp_path: str) -> None:
     """TGS → 逐帧渲染 RGBA PNG → ffmpeg 合成动态 WebP（保留透明通道）"""
     anim = LottieAnimation.from_tgs(tgs_path)
@@ -140,11 +161,8 @@ async def handle_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
         gif_path = tmp_path.replace(".webm", ".gif")
         webp_path = tmp_path.replace(".webm", ".webp")
 
-        # webm → GIF（ffmpeg）
-        subprocess.run([
-            "ffmpeg", "-y", "-i", tmp_path,
-            "-loop", "0", gif_path,
-        ], check=True, capture_output=True)
+        # webm → GIF（两阶段调色板 + 白色背景）
+        _webm_to_gif(tmp_path, gif_path)
 
         # webm → WebP（ffmpeg，lossy 压缩保留透明通道）
         subprocess.run([
@@ -275,10 +293,7 @@ async def handle_pack(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             try:
                                 gif_path = tmp_path.replace(".webm", ".gif")
                                 webp_path = tmp_path.replace(".webm", ".webp")
-                                subprocess.run([
-                                    "ffmpeg", "-y", "-i", tmp_path,
-                                    "-loop", "0", gif_path,
-                                ], check=True, capture_output=True)
+                                _webm_to_gif(tmp_path, gif_path)
                                 subprocess.run([
                                     "ffmpeg", "-y", "-i", tmp_path,
                                     "-vcodec", "libwebp", "-lossless", "0",
