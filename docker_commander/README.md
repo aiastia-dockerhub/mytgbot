@@ -138,6 +138,7 @@ docker compose logs -f
 
 1. **在 @BotFather 开启 Bot-to-Bot Communication** — 不仅是指挥官 Bot，所有子 Bot 也需要开启
 2. **将指挥官 Bot 的 user_id 加入子 Bot 的 ADMIN_IDS** — 因为指挥官代替你发送命令
+3. **在工作群组中给所有子 Bot 设置管理员权限** — Bot 默认处于 Group Privacy 模式，只能收到 `/命令` 和 `@提及` 的消息。设置为管理员后，Bot 才能收到贴纸、图片等非文本消息
 
 ### 防循环
 

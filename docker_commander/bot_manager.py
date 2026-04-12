@@ -34,6 +34,8 @@ class BotManager:
         self._pending_responses: dict[int, tuple[asyncio.Event, str]] = {}
         # 缓存的工作群消息 ID（用于收集响应）
         self._response_cache: dict[int, str] = {}
+        # 缓存的完整 message 对象（用于转发媒体）
+        self._response_message_cache: dict[int, object] = {}
 
     def _check_rate_limit(self, bot_username: str) -> bool:
         """检查频率限制"""
@@ -165,7 +167,7 @@ class BotManager:
 
         try:
             await asyncio.wait_for(event.wait(), timeout=timeout)
-            # 获取缓存的响应
+            # 获取缓存的响应文本
             response = self._response_cache.pop(bot_username, None)
             return response
         except asyncio.TimeoutError:
@@ -174,6 +176,10 @@ class BotManager:
         finally:
             self._pending_responses.pop(bot_username, None)
             self._decrement_depth(bot_username)
+
+    def pop_response_message(self, bot_username: str):
+        """获取并清除缓存的响应消息对象（用于转发媒体）"""
+        return self._response_message_cache.pop(bot_username, None)
 
     async def handle_bot_response(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
@@ -197,11 +203,29 @@ class BotManager:
         bot_username = from_user.username or ""
         response_text = message.text or message.caption or "[媒体/文件]"
 
-        logger.info("收到来自 @%s 的回复: %s", bot_username, response_text[:200])
+        # 收集响应类型信息，用于转发媒体消息
+        response_type = "text"
+        if message.photo:
+            response_type = "photo"
+        elif message.document:
+            response_type = "document"
+        elif message.video:
+            response_type = "video"
+        elif message.animation:
+            response_type = "animation"
+        elif message.sticker:
+            response_type = "sticker"
+
+        logger.info(
+            "收到来自 @%s 的回复 (类型: %s): %s",
+            bot_username, response_type, response_text[:200],
+        )
 
         # 如果有等待此 bot 响应的任务，触发事件
         if bot_username in self._pending_responses:
             self._response_cache[bot_username] = response_text
+            # 存储完整的 message 对象，用于转发媒体
+            self._response_message_cache[bot_username] = message
             event, _ = self._pending_responses[bot_username]
             event.set()
 

@@ -40,6 +40,52 @@ def escape_markdown(text: str) -> str:
     return re.sub(r'([_*\[\]()~`>#+\-=|{}.!\\])', r'\\\1', text)
 
 
+async def forward_response_to_user(update: Update, bot_username: str):
+    """将 bot 的回复（含媒体）转发给用户"""
+    msg = manager.pop_response_message(bot_username)
+    if msg is None:
+        return False
+
+    chat_id = update.effective_chat.id
+
+    # 优先转发媒体内容
+    if msg.photo:
+        # 取最大尺寸的图片
+        photo = msg.photo[-1]
+        await update.message.bot.send_photo(
+            chat_id=chat_id,
+            photo=photo.file_id,
+            caption=msg.caption or f"✅ @{bot_username}",
+        )
+    elif msg.document:
+        await update.message.bot.send_document(
+            chat_id=chat_id,
+            document=msg.document.file_id,
+            caption=msg.caption or f"✅ @{bot_username}",
+        )
+    elif msg.video:
+        await update.message.bot.send_video(
+            chat_id=chat_id,
+            video=msg.video.file_id,
+            caption=msg.caption or f"✅ @{bot_username}",
+        )
+    elif msg.animation:
+        await update.message.bot.send_animation(
+            chat_id=chat_id,
+            animation=msg.animation.file_id,
+            caption=msg.caption or f"✅ @{bot_username}",
+        )
+    elif msg.sticker:
+        await update.message.bot.send_sticker(
+            chat_id=chat_id,
+            sticker=msg.sticker.file_id,
+        )
+    else:
+        return False  # 纯文本，由调用方处理
+
+    return True
+
+
 # ==================== 权限检查 ====================
 def admin_only(func):
     """管理员权限检查装饰器"""
@@ -206,7 +252,11 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             # 等待响应
             response = await manager.wait_for_response(context, bot_username)
             if response:
-                await update.message.reply_text(f"✅ @{bot_username} 回复:\n\n{response[:4000]}")
+                # 尝试转发媒体内容（图片/文件等）
+                forwarded = await forward_response_to_user(update, bot_username)
+                if not forwarded:
+                    # 纯文本回复
+                    await update.message.reply_text(f"✅ @{bot_username} 回复:\n\n{response[:4000]}")
             else:
                 await update.message.reply_text(f"⏳ @{bot_username} 处理中，暂未收到回复。")
         else:
@@ -254,9 +304,17 @@ async def handle_sticker_message(update: Update, context: ContextTypes.DEFAULT_T
             # 等待响应
             response = await manager.wait_for_response(context, bot_username)
             if response:
-                await update.message.reply_text(f"✅ @{bot_username} 回复:\n\n{response[:4000]}")
+                # 尝试转发媒体内容（图片/文件等）
+                forwarded = await forward_response_to_user(update, bot_username)
+                if not forwarded:
+                    # 纯文本回复
+                    await update.message.reply_text(f"✅ @{bot_username} 回复:\n\n{response[:4000]}")
             else:
-                await update.message.reply_text(f"⏳ @{bot_username} 处理中，暂未收到回复。")
+                await update.message.reply_text(
+                    f"⏳ @{bot_username} 处理超时。\n"
+                    f"💡 提示: 请确保在工作群组中给 @{bot_username} 设置了管理员权限，"
+                    f"否则 bot 在群组隐私模式下无法收到贴纸等非文本消息。"
+                )
         else:
             await update.message.reply_text("❌ 贴纸转发失败，请检查配置。")
     else:
