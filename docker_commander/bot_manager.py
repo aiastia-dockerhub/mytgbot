@@ -30,12 +30,16 @@ class BotManager:
         self._processed_messages: dict[int, float] = {}
         # 交互深度计数
         self._interaction_depth: dict[str, int] = defaultdict(int)
-        # 等待响应的任务 {chat_id: (event, start_time)}
+        # 等待响应的任务 {bot_username: (event, key)}
         self._pending_responses: dict[int, tuple[asyncio.Event, str]] = {}
         # 缓存的工作群消息 ID（用于收集响应）
         self._response_cache: dict[int, str] = {}
         # 缓存的完整 message 对象（用于转发媒体）
         self._response_message_cache: dict[int, object] = {}
+        # 超时后的兜底转发：记录 bot_username → (user_chat_id, expire_time)
+        self._late_forward_map: dict[str, tuple[int, float]] = {}
+        # bot 对象引用（用于兜底转发）
+        self._bot = None
 
     def _check_rate_limit(self, bot_username: str) -> bool:
         """检查频率限制"""
@@ -255,6 +259,14 @@ class BotManager:
             self._response_message_cache[bot_username].append(message)
             event, _ = self._pending_responses[bot_username]
             event.set()
+        elif bot_username in self._late_forward_map:
+            # 超时后的兜底转发：直接发送给用户
+            chat_id, expire = self._late_forward_map[bot_username]
+            if time.time() < expire:
+                logger.info("兜底转发: @%s 的回复转发给用户 chat_id=%d", bot_username, chat_id)
+                await self._forward_late_response(message, chat_id, bot_username)
+            else:
+                self._late_forward_map.pop(bot_username, None)
 
         return response_text
 
@@ -264,6 +276,56 @@ class BotManager:
             self._interaction_depth[bot_username] = 0
         else:
             self._interaction_depth.clear()
+
+    def set_bot(self, bot):
+        """设置 bot 对象引用（用于兜底转发）"""
+        self._bot = bot
+
+    def register_late_forward(self, bot_username: str, chat_id: int, ttl: int = 300):
+        """注册兜底转发：超时后如果 bot 仍然回复，直接转发给用户"""
+        self._late_forward_map[bot_username] = (chat_id, time.time() + ttl)
+        logger.info("已注册兜底转发: @%s → chat_id=%d (TTL=%ds)", bot_username, chat_id, ttl)
+
+    async def _forward_late_response(self, message, chat_id: int, bot_username: str):
+        """兜底转发：将超时后到达的回复直接发送给用户"""
+        try:
+            if message.photo:
+                photo = message.photo[-1]
+                await self._bot.send_photo(
+                    chat_id=chat_id,
+                    photo=photo.file_id,
+                    caption=f"✅ @{bot_username} (延迟回复)",
+                )
+            elif message.document:
+                await self._bot.send_document(
+                    chat_id=chat_id,
+                    document=message.document.file_id,
+                    caption=message.caption or f"✅ @{bot_username} (延迟回复)",
+                )
+            elif message.video:
+                await self._bot.send_video(
+                    chat_id=chat_id,
+                    video=message.video.file_id,
+                    caption=message.caption or f"✅ @{bot_username} (延迟回复)",
+                )
+            elif message.animation:
+                await self._bot.send_animation(
+                    chat_id=chat_id,
+                    animation=message.animation.file_id,
+                    caption=f"✅ @{bot_username} (延迟回复)",
+                )
+            elif message.sticker:
+                await self._bot.send_sticker(
+                    chat_id=chat_id,
+                    sticker=message.sticker.file_id,
+                )
+            elif message.text:
+                await self._bot.send_message(
+                    chat_id=chat_id,
+                    text=f"✅ @{bot_username} (延迟回复):\n\n{message.text[:4000]}",
+                )
+        except Exception as e:
+            logger.error("兜底转发失败: %s", e)
 
     def get_status(self) -> dict:
         """获取所有 bot 的状态"""

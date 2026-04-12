@@ -322,9 +322,13 @@ async def handle_sticker_message(update: Update, context: ContextTypes.DEFAULT_T
         )
 
         if msg_id:
-            # 等待响应（贴纸转换需要较长时间，使用120秒超时）
-            response = await manager.wait_for_response(context, bot_username, timeout=120)
+            # 注册兜底转发：即使超时，bot 回复后也会直接转发给用户
+            manager.register_late_forward(bot_username, update.effective_chat.id, ttl=300)
+            # 等待响应（贴纸转换需要较长时间，使用180秒超时）
+            response = await manager.wait_for_response(context, bot_username, timeout=180)
             if response:
+                # 取消兜底转发（已正常收到回复）
+                manager._late_forward_map.pop(bot_username, None)
                 # 尝试转发媒体内容（图片/文件等）
                 forwarded = await forward_response_to_user(update, bot_username)
                 if not forwarded:
@@ -332,9 +336,8 @@ async def handle_sticker_message(update: Update, context: ContextTypes.DEFAULT_T
                     await update.message.reply_text(f"✅ @{bot_username} 回复:\n\n{response[:4000]}")
             else:
                 await update.message.reply_text(
-                    f"⏳ @{bot_username} 处理超时。\n"
-                    f"💡 提示: 请确保在工作群组中给 @{bot_username} 设置了管理员权限，"
-                    f"否则 bot 在群组隐私模式下无法收到贴纸等非文本消息。"
+                    f"⏳ @{bot_username} 处理中，回复可能需要几分钟。\n"
+                    f"图片会在处理完成后自动发送给你。"
                 )
         else:
             await update.message.reply_text("❌ 贴纸转发失败，请检查配置。")
@@ -381,11 +384,12 @@ def main():
     enabled = get_enabled_bots()
     logger.info("已启用的 bot: %s", list(enabled.keys()))
 
-    # 构建 Application
+    # 构建 Application（启用并发 update 处理，否则 wait_for_response 会阻塞其他消息处理）
     application = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
         .post_init(post_init)
+        .concurrent_updates(True)
         .build()
     )
 
@@ -432,7 +436,8 @@ def main():
 
 
 async def post_init(application):
-    """Bot 初始化后注册命令"""
+    """Bot 初始化后注册命令和设置引用"""
+    manager.set_bot(application.bot)
     commands = [
         ("start", "查看帮助"),
         ("help", "查看帮助"),
