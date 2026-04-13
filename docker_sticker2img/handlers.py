@@ -8,11 +8,29 @@ import zipfile
 import numpy as np
 from PIL import Image
 from moviepy import VideoFileClip, ColorClip, CompositeVideoClip
+from moviepy.video.fx import Crop
 from rlottie_python import LottieAnimation
 from telegram import Update
 from telegram.ext import ContextTypes
 
 logger = logging.getLogger(__name__)
+
+
+def _crop_transparent(img: Image.Image, padding: int = 4) -> Image.Image:
+    """裁剪图片中的透明区域，只保留内容部分（带少量 padding）"""
+    if img.mode != "RGBA":
+        return img
+    bbox = img.getbbox()  # (left, top, right, bottom) 非零区域
+    if not bbox:
+        return img
+    # 加 padding
+    bbox = (
+        max(0, bbox[0] - padding),
+        max(0, bbox[1] - padding),
+        min(img.width, bbox[2] + padding),
+        min(img.height, bbox[3] + padding),
+    )
+    return img.crop(bbox)
 
 
 def _tgs_to_gif(tgs_path: str, gif_path: str) -> None:
@@ -77,11 +95,12 @@ def _tgs_to_gif(tgs_path: str, gif_path: str) -> None:
 
 
 def _buf_to_jpg(buf: io.BytesIO) -> io.BytesIO:
-    """将图像转为 JPG BytesIO（透明区域自动贴白色背景）"""
+    """将图像转为 JPG BytesIO（自动裁剪白边 + 透明区域贴白色背景）"""
     buf.seek(0)
     img = Image.open(buf)
-    # 处理透明通道：先贴到白色背景上
+    # 处理透明通道：先裁剪白边，再贴白色背景
     if img.mode == "RGBA":
+        img = _crop_transparent(img)
         bg = Image.new("RGB", img.size, (255, 255, 255))
         bg.paste(img, mask=img.split()[3])
         img = bg
@@ -91,6 +110,18 @@ def _buf_to_jpg(buf: io.BytesIO) -> io.BytesIO:
     img.save(jpg_buf, format="JPEG", quality=95)
     jpg_buf.seek(0)
     return jpg_buf
+
+
+def _buf_to_cropped_png(buf: io.BytesIO) -> io.BytesIO:
+    """将 RGBA 图像裁剪透明区域后输出 PNG BytesIO"""
+    buf.seek(0)
+    img = Image.open(buf)
+    if img.mode == "RGBA":
+        img = _crop_transparent(img)
+    png_buf = io.BytesIO()
+    img.save(png_buf, format="PNG")
+    png_buf.seek(0)
+    return png_buf
 
 
 def _find_crop_bounds_from_mask(clip) -> tuple | None:
@@ -143,7 +174,8 @@ def _webm_to_gif(webm_path: str, gif_path: str) -> None:
         crop_w = cmax - cmin + 1
         crop_h = rmax - rmin + 1
         bg = ColorClip(size=(crop_w, crop_h), color=(255, 255, 255), duration=clip.duration)
-        cropped_clip = clip.crop(y1=rmin, y2=rmax + 1, x1=cmin, x2=cmax + 1)
+        # MoviePy 2.x: 使用 with_effects + Crop
+        cropped_clip = clip.with_effects([Crop(y1=rmin, y2=rmax + 1, x1=cmin, x2=cmax + 1)])
         final = CompositeVideoClip([bg, cropped_clip.with_position("center")])
     else:
         # 找不到内容边界，回退到全尺寸白色背景
@@ -164,11 +196,12 @@ async def handle_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await file.download_to_memory(out=buf)
     buf.seek(0)
 
-    # ===== 静态贴纸 → PNG + JPG =====
+    # ===== 静态贴纸 → PNG + JPG（自动裁剪白边）=====
     if not sticker.is_animated and not sticker.is_video:
-        buf.seek(0)
-        buf.name = "sticker.png"
-        await message.reply_photo(photo=buf)
+        # 发送裁剪后的 PNG
+        png_buf = _buf_to_cropped_png(buf)
+        await message.reply_document(document=png_buf, filename="sticker.png")
+        # 发送裁剪后的 JPG
         jpg_buf = _buf_to_jpg(buf)
         await message.reply_document(document=jpg_buf, filename="sticker.jpg")
         buf.close()
@@ -271,12 +304,15 @@ async def handle_pack(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await stk_file.download_to_memory(out=stk_buf)
 
                     if not is_animated and not is_video:
-                        # 静态贴纸 → PNG + JPG
-                        stk_buf.seek(0)
-                        zf.writestr(f"{pack_name}/{i:03d}.png", stk_buf.read())
-
+                        # 静态贴纸 → 裁剪白边后的 PNG + JPG
                         stk_buf.seek(0)
                         img = Image.open(stk_buf)
+                        img = _crop_transparent(img) if img.mode == "RGBA" else img
+                        png_buf = io.BytesIO()
+                        img.save(png_buf, format="PNG")
+                        zf.writestr(f"{pack_name}/{i:03d}.png", png_buf.getvalue())
+
+                        # JPG：贴白色背景
                         if img.mode == "RGBA":
                             bg = Image.new("RGB", img.size, (255, 255, 255))
                             bg.paste(img, mask=img.split()[3])
