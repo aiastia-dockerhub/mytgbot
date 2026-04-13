@@ -10,7 +10,7 @@ from moviepy.video.fx import Crop
 from rlottie_python import LottieAnimation
 
 
-def crop_transparent(img: Image.Image, padding: int = 4) -> Image.Image:
+def crop_transparent(img: Image.Image, padding: int = 1) -> Image.Image:
     """裁剪图片中的透明区域，只保留内容部分（带少量 padding）"""
     if img.mode != "RGBA":
         return img
