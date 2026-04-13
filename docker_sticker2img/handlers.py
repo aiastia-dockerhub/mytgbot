@@ -5,6 +5,7 @@ import os
 import tempfile
 import zipfile
 
+import numpy as np
 from PIL import Image
 from moviepy import VideoFileClip, ColorClip, CompositeVideoClip
 from rlottie_python import LottieAnimation
@@ -15,43 +16,140 @@ logger = logging.getLogger(__name__)
 
 
 def _tgs_to_gif(tgs_path: str, gif_path: str) -> None:
-    """TGS → GIF（逐帧提取 + 白色背景）"""
+    """TGS → GIF（逐帧提取 + 自动裁剪白边 + 白色背景）"""
     anim = LottieAnimation.from_tgs(tgs_path)
     total_frames = anim.lottie_animation_get_totalframe()
     fps = anim.lottie_animation_get_framerate()
-    frames = []
+
+    # 先收集所有 RGBA 帧
+    rgba_frames = []
     for i in range(total_frames):
         frame = anim.render_pillow_frame(frame_num=i)  # PIL Image（RGBA）
         if frame is None:
             continue
-        bg = Image.new("RGBA", frame.size, (255, 255, 255, 255))
-        bg.paste(frame, mask=frame.split()[3])  # 用 alpha 通道作为 mask
+        rgba_frames.append(frame)
+
+    if not rgba_frames:
+        return
+
+    # 找到所有帧中非透明像素的联合边界框
+    min_left, min_top = float("inf"), float("inf")
+    max_right, max_bottom = 0, 0
+    for frame in rgba_frames:
+        bbox = frame.getbbox()  # (left, top, right, bottom) 非零区域
+        if bbox:
+            min_left = min(min_left, bbox[0])
+            min_top = min(min_top, bbox[1])
+            max_right = max(max_right, bbox[2])
+            max_bottom = max(max_bottom, bbox[3])
+
+    if max_right <= min_left or max_bottom <= min_top:
+        return
+
+    # 加少量 padding，防止贴边
+    padding = 4
+    w, h = rgba_frames[0].size
+    min_left = max(0, min_left - padding)
+    min_top = max(0, min_top - padding)
+    max_right = min(w, max_right + padding)
+    max_bottom = min(h, max_bottom + padding)
+
+    # 裁剪框
+    crop_box = (min_left, min_top, max_right, max_bottom)
+
+    # 裁剪 + 贴白色背景
+    frames = []
+    for frame in rgba_frames:
+        cropped = frame.crop(crop_box)
+        bg = Image.new("RGBA", cropped.size, (255, 255, 255, 255))
+        bg.paste(cropped, mask=cropped.split()[3])
         frames.append(bg.convert("RGB"))
 
     if frames:
         frames[0].save(
-            gif_path, save_all=True, append_images=frames[1:],
-            duration=int(1000 / fps) if fps > 0 else 40, loop=0, optimize=True,
+            gif_path,
+            save_all=True,
+            append_images=frames[1:],
+            duration=int(1000 / fps) if fps > 0 else 40,
+            loop=0,
+            optimize=True,
         )
 
 
 def _buf_to_jpg(buf: io.BytesIO) -> io.BytesIO:
-    """将图像转为 JPG BytesIO"""
+    """将图像转为 JPG BytesIO（透明区域自动贴白色背景）"""
     buf.seek(0)
-    img = Image.open(buf).convert("RGB")
+    img = Image.open(buf)
+    # 处理透明通道：先贴到白色背景上
+    if img.mode == "RGBA":
+        bg = Image.new("RGB", img.size, (255, 255, 255))
+        bg.paste(img, mask=img.split()[3])
+        img = bg
+    else:
+        img = img.convert("RGB")
     jpg_buf = io.BytesIO()
     img.save(jpg_buf, format="JPEG", quality=95)
     jpg_buf.seek(0)
     return jpg_buf
 
 
+def _find_crop_bounds_from_mask(clip) -> tuple | None:
+    """采样多帧 mask，找到非透明区域的联合边界框"""
+    if clip.mask is None:
+        return None
+
+    min_r, min_c = clip.h, clip.w
+    max_r, max_c = 0, 0
+
+    # 采样最多 8 帧，取并集
+    n_samples = min(8, max(1, int(clip.fps * clip.duration)))
+    for i in range(n_samples):
+        t = clip.duration * (i + 0.5) / n_samples
+        try:
+            mask_frame = clip.mask.get_frame(t)  # (H, W) float 0~1
+        except Exception:
+            continue
+        rows = np.any(mask_frame > 0.01, axis=1)
+        cols = np.any(mask_frame > 0.01, axis=0)
+        if rows.any():
+            r = np.where(rows)[0]
+            min_r = min(min_r, int(r[0]))
+            max_r = max(max_r, int(r[-1]))
+        if cols.any():
+            c = np.where(cols)[0]
+            min_c = min(min_c, int(c[0]))
+            max_c = max(max_c, int(c[-1]))
+
+    if max_r <= min_r or max_c <= min_c:
+        return None
+
+    return min_r, min_c, max_r, max_c
+
+
 def _webm_to_gif(webm_path: str, gif_path: str) -> None:
-    """webm → GIF（moviepy 白色背景合成）"""
+    """webm → GIF（自动裁剪白边 + 白色背景合成）"""
     clip = VideoFileClip(webm_path, has_mask=True)
-    # 创建白色背景
-    bg = ColorClip(size=clip.size, color=(255, 255, 255), duration=clip.duration)
-    # 合成：白色背景 + 贴纸叠加
-    final = CompositeVideoClip([bg, clip.with_position("center")])
+
+    # 尝试找到内容边界并裁剪
+    bounds = _find_crop_bounds_from_mask(clip)
+    if bounds:
+        rmin, cmin, rmax, cmax = bounds
+        padding = 4
+        rmin = max(0, rmin - padding)
+        rmax = min(clip.h - 1, rmax + padding)
+        cmin = max(0, cmin - padding)
+        cmax = min(clip.w - 1, cmax + padding)
+
+        crop_w = cmax - cmin + 1
+        crop_h = rmax - rmin + 1
+        bg = ColorClip(size=(crop_w, crop_h), color=(255, 255, 255), duration=clip.duration)
+        cropped_clip = clip.crop(y1=rmin, y2=rmax + 1, x1=cmin, x2=cmax + 1)
+        final = CompositeVideoClip([bg, cropped_clip.with_position("center")])
+    else:
+        # 找不到内容边界，回退到全尺寸白色背景
+        bg = ColorClip(size=clip.size, color=(255, 255, 255), duration=clip.duration)
+        final = CompositeVideoClip([bg, clip.with_position("center")])
+
     final.write_gif(gif_path, fps=15, logger=None)
 
 
@@ -178,7 +276,13 @@ async def handle_pack(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         zf.writestr(f"{pack_name}/{i:03d}.png", stk_buf.read())
 
                         stk_buf.seek(0)
-                        img = Image.open(stk_buf).convert("RGB")
+                        img = Image.open(stk_buf)
+                        if img.mode == "RGBA":
+                            bg = Image.new("RGB", img.size, (255, 255, 255))
+                            bg.paste(img, mask=img.split()[3])
+                            img = bg
+                        else:
+                            img = img.convert("RGB")
                         jpg_buf = io.BytesIO()
                         img.save(jpg_buf, format="JPEG", quality=95)
                         zf.writestr(f"{pack_name}/{i:03d}.jpg", jpg_buf.getvalue())
