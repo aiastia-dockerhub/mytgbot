@@ -15,8 +15,9 @@ from modules.javbus_api import (
     get_all_movie_ids_by_filter,
     search_all_movie_ids,
     get_magnets_for_movie_list,
-    get_star_info,
 )
+# 详情类命令从 info_handlers 导入，供 re-export
+from modules.info_handlers import movie_command, star_command, codes_command  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,8 @@ async def help_command(update: Update, context: ContextTypes):
         "  示例: <code>/movie SSIS-406</code>\n\n"
         "<code>/star [演员id]</code> — 查看演员信息\n"
         "  示例: <code>/star 2xi</code>\n\n"
+        "<code>/codes [演员id]</code> — 列出演员全部影片番号（不含磁力）\n"
+        "  示例: <code>/codes 2xi</code>\n\n"
         "<code>/stop</code> — 停止当前批量任务\n\n"
         "📖 <b>说明:</b>\n"
         "• 演员ID 获取: 访问 javbus.com/star 页面，URL 中的ID\n"
@@ -200,6 +203,46 @@ async def jav_star_command(update: Update, context: ContextTypes):
     lines = [r['link'] for r in results if r.get('link')]
     content = "\n".join(lines)
     await _send_magnet_file(update, context, content, f"star_{star_id}.txt", len(results))
+
+
+# ==================== 工具函数 ====================
+
+
+async def _send_magnet_file(update, context, content, filename, count):
+    """发送磁力链接 txt 文件"""
+    bytes_io = io.BytesIO(content.encode("utf-8"))
+    bytes_io.seek(0)
+    try:
+        await context.bot.send_document(
+            chat_id=update.message.chat_id,
+            document=bytes_io,
+            filename=filename,
+            caption=f"✅ 共收集到 {count} 个磁力链接",
+            reply_to_message_id=update.effective_message.message_id
+        )
+        bytes_io.close()
+    except Exception as e:
+        logger.error("发送文件失败: %s", e)
+        await update.message.reply_text(f"❌ 发送文件失败: {e}")
+
+
+async def _send_magnet_file_by_chat(context, update, chat_id, content, filename, count, reply_to):
+    """通过 chat_id 发送磁力链接 txt 文件（用于回调用）"""
+    bytes_io = io.BytesIO(content.encode("utf-8"))
+    bytes_io.seek(0)
+    try:
+        kwargs = {
+            "chat_id": chat_id,
+            "document": bytes_io,
+            "filename": filename,
+            "caption": f"✅ 共收集到 {count} 个磁力链接",
+        }
+        if reply_to:
+            kwargs["reply_to_message_id"] = reply_to
+        await context.bot.send_document(**kwargs)
+        bytes_io.close()
+    except Exception as e:
+        logger.error("发送文件失败: %s", e)
 
 
 # ==================== jav_filter: 先展示再确认 ====================
@@ -430,198 +473,3 @@ async def _collect_magnets_from_search(query, context, keyword, cancel_event):
         content=content, filename=f"search_{keyword}.txt",
         count=len(results), reply_to=None
     )
-
-
-# ==================== movie & star 详情 ====================
-
-@admin_only
-async def movie_command(update: Update, context: ContextTypes):
-    """查看影片详情"""
-    if not context.args or len(context.args) != 1:
-        await update.message.reply_text(
-            "用法: <code>/movie [番号]</code>\n示例: <code>/movie SSIS-406</code>",
-            parse_mode="HTML"
-        )
-        return
-
-    movie_id = context.args[0].upper()
-    await update.message.reply_text(
-        f"🔍 正在获取 <code>{html_escape(movie_id)}</code> 详情...",
-        parse_mode="HTML"
-    )
-
-    result = await get_single_movie_magnet(movie_id)
-    if not result:
-        await update.message.reply_text(
-            f"❌ 未找到影片 <code>{html_escape(movie_id)}</code>",
-            parse_mode="HTML"
-        )
-        return
-
-    detail = result["detail"]
-
-    lines = [f"🎬 <b>{html_escape(detail.get('id', movie_id))}</b>"]
-    lines.append(f"📝 {html_escape(detail.get('title', ''))}")
-    lines.append(f"📅 日期: {html_escape(detail.get('date', 'N/A'))}")
-    lines.append(f"⏱ 时长: {html_escape(str(detail.get('videoLength', 'N/A')))} 分钟")
-
-    if detail.get('director'):
-        lines.append(f"🎬 导演: {html_escape(detail['director'].get('name', 'N/A'))}")
-    if detail.get('producer'):
-        lines.append(f"🏭 制作商: {html_escape(detail['producer'].get('name', 'N/A'))}")
-    if detail.get('publisher'):
-        lines.append(f"📦 发行商: {html_escape(detail['publisher'].get('name', 'N/A'))}")
-    if detail.get('series'):
-        lines.append(f"📚 系列: {html_escape(detail['series'].get('name', 'N/A'))}")
-
-    stars = detail.get('stars', [])
-    if stars:
-        star_names = ", ".join(html_escape(s.get('name', '')) for s in stars)
-        lines.append(f"👩 演员: {star_names}")
-
-    genres = detail.get('genres', [])
-    if genres:
-        genre_names = ", ".join(html_escape(g.get('name', '')) for g in genres)
-        lines.append(f"🏷 类别: {genre_names}")
-
-    img_url = detail.get('img', '')
-    if img_url:
-        cover_url = img_url.replace('/thumb/', '/cover/').replace('.jpg', '_b.jpg')
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(cover_url) as resp:
-                    if resp.status == 200:
-                        img_data = io.BytesIO(await resp.read())
-                        img_data.seek(0)
-                        caption = "\n".join(lines[:8])
-                        if len(caption) > 1024:
-                            caption = caption[:1020] + "..."
-                        await update.message.reply_photo(
-                            photo=img_data,
-                            caption=caption,
-                            parse_mode="HTML"
-                        )
-                        return
-        except Exception as e:
-            logger.warning("发送封面图失败: %s", e)
-
-    text = "\n".join(lines)
-    if len(text) > 4000:
-        text = text[:3996] + "..."
-    await update.message.reply_text(text, parse_mode="HTML")
-
-
-@admin_only
-async def star_command(update: Update, context: ContextTypes):
-    """查看演员信息"""
-    if not context.args or len(context.args) != 1:
-        await update.message.reply_text(
-            "用法: <code>/star [演员id]</code>\n示例: <code>/star 2xi</code>\n\n"
-            "演员ID 获取: 访问 javbus.com/star 页面 URL 中的ID",
-            parse_mode="HTML"
-        )
-        return
-
-    star_id = context.args[0]
-    await update.message.reply_text(
-        f"🔍 正在获取演员 <code>{html_escape(star_id)}</code> 信息...",
-        parse_mode="HTML"
-    )
-
-    headers = {}
-    from config import JAVBUS_AUTH_TOKEN
-    if JAVBUS_AUTH_TOKEN:
-        headers['j-auth-token'] = JAVBUS_AUTH_TOKEN
-
-    async with aiohttp.ClientSession(headers=headers) as session:
-        info = await get_star_info(session, star_id)
-
-    if not info:
-        await update.message.reply_text(
-            f"❌ 未找到演员 <code>{html_escape(star_id)}</code>",
-            parse_mode="HTML"
-        )
-        return
-
-    lines = [
-        f"👩 <b>{html_escape(info.get('name', 'N/A'))}</b>",
-        f"🆔 ID: <code>{html_escape(info.get('id', 'N/A'))}</code>",
-    ]
-    if info.get('birthday'):
-        lines.append(f"🎂 生日: {html_escape(info['birthday'])}")
-    if info.get('age'):
-        lines.append(f"📐 年龄: {html_escape(str(info['age']))}")
-    if info.get('height'):
-        lines.append(f"📏 身高: {html_escape(str(info['height']))}")
-    if info.get('bust'):
-        lines.append(f" bust: {html_escape(str(info['bust']))}")
-    if info.get('waistline'):
-        lines.append(f"💪 腰围: {html_escape(str(info['waistline']))}")
-    if info.get('hipline'):
-        lines.append(f"🍑 臀围: {html_escape(str(info['hipline']))}")
-    if info.get('birthplace'):
-        lines.append(f"🏠 出生地: {html_escape(info['birthplace'])}")
-    if info.get('hobby'):
-        lines.append(f"🎯 爱好: {html_escape(info['hobby'])}")
-
-    avatar_url = info.get('avatar', '')
-    if avatar_url:
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(avatar_url) as resp:
-                    if resp.status == 200:
-                        img_data = io.BytesIO(await resp.read())
-                        img_data.seek(0)
-                        caption = "\n".join(lines)
-                        if len(caption) > 1024:
-                            caption = caption[:1020] + "..."
-                        await update.message.reply_photo(
-                            photo=img_data,
-                            caption=caption,
-                            parse_mode="HTML"
-                        )
-                        return
-        except Exception as e:
-            logger.warning("发送头像失败: %s", e)
-
-    text = "\n".join(lines)
-    await update.message.reply_text(text, parse_mode="HTML")
-
-
-# ==================== 工具函数 ====================
-
-async def _send_magnet_file(update, context, content, filename, count):
-    """发送磁力链接 txt 文件"""
-    bytes_io = io.BytesIO(content.encode('utf-8'))
-    bytes_io.seek(0)
-    try:
-        await context.bot.send_document(
-            chat_id=update.message.chat_id,
-            document=bytes_io,
-            filename=filename,
-            caption=f"✅ 共收集到 {count} 个磁力链接",
-            reply_to_message_id=update.effective_message.message_id
-        )
-        bytes_io.close()
-    except Exception as e:
-        logger.error("发送文件失败: %s", e)
-        await update.message.reply_text(f"❌ 发送文件失败: {e}")
-
-
-async def _send_magnet_file_by_chat(context, update, chat_id, content, filename, count, reply_to):
-    """通过 chat_id 发送磁力链接 txt 文件（用于回调用）"""
-    bytes_io = io.BytesIO(content.encode('utf-8'))
-    bytes_io.seek(0)
-    try:
-        kwargs = {
-            "chat_id": chat_id,
-            "document": bytes_io,
-            "filename": filename,
-            "caption": f"✅ 共收集到 {count} 个磁力链接",
-        }
-        if reply_to:
-            kwargs["reply_to_message_id"] = reply_to
-        await context.bot.send_document(**kwargs)
-        bytes_io.close()
-    except Exception as e:
-        logger.error("发送文件失败: %s", e)

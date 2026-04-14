@@ -26,6 +26,7 @@ from modules.handlers import (
     jav_search_command,
     movie_command,
     star_command,
+    codes_command,
     stop_command,
     button_callback,
 )
@@ -40,6 +41,7 @@ async def post_init(application):
         ("jav_search", "搜索影片"),
         ("movie", "查看影片详情"),
         ("star", "查看演员信息"),
+        ("codes", "列出演员影片番号"),
         ("stop", "停止当前批量任务"),
         ("help", "查看帮助"),
     ]
@@ -88,6 +90,7 @@ def main():
     # 影片 & 演员详情
     application.add_handler(CommandHandler("movie", movie_command))
     application.add_handler(CommandHandler("star", star_command))
+    application.add_handler(CommandHandler("codes", codes_command))
 
     # 启动
     logger.info("JavBus Bot 已启动，开始轮询消息...")

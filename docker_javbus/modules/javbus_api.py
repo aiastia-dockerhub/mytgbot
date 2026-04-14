@@ -243,6 +243,49 @@ async def get_magnets_for_movie_list(movie_ids, progress_callback=None, cancel_e
     return results
 
 
+async def get_star_movie_list(star_id):
+    """获取女优的影片列表（番号+基本信息，不获取磁力）"""
+    params = {
+        "filterType": "star",
+        "filterValue": star_id,
+        "magnet": "exist"
+    }
+    if DEFAULT_TYPE:
+        params["type"] = DEFAULT_TYPE
+
+    all_movies = []
+    headers = _get_headers()
+    async with aiohttp.ClientSession(headers=headers) as session:
+        page = 1
+        while page <= MAX_PAGES:
+            await _rate_limiter.acquire()
+            req_params = {**params, "page": str(page)}
+            url = f"{JAVBUS_API_URL}/api/movies"
+            try:
+                async with session.get(url, params=req_params) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        movies = data.get('movies', [])
+                        has_next = data.get('pagination', {}).get('hasNextPage', False)
+                        for m in movies:
+                            all_movies.append({
+                                "id": m.get("id", ""),
+                                "title": m.get("title", ""),
+                                "date": m.get("date", ""),
+                                "img": m.get("img", ""),
+                            })
+                        if not has_next or not movies:
+                            break
+                    else:
+                        logger.error("获取女优影片列表失败: HTTP %s", resp.status)
+                        break
+            except aiohttp.ClientError as e:
+                logger.error("请求女优影片列表异常: %s", e)
+                break
+            page += 1
+    return all_movies
+
+
 async def get_single_movie_magnet(movie_id):
     """获取单个影片的详情和磁力链接"""
     headers = _get_headers()
