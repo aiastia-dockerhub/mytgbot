@@ -180,7 +180,7 @@ async def get_id_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     file_type = None
 
     if replied.photo:
-        photo = replied.photo[-1]
+        photo = replied.photo[len(replied.photo) - 1]
         result = save_file(user_id, 'photo', photo.file_id, photo.file_size or 0, photo.file_unique_id or '', bot_username, code_prefix)
         file_type = '图片'
     elif replied.video:

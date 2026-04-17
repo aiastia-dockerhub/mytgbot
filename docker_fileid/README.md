@@ -127,6 +127,162 @@ python build.py build_ext --inplace
 
 自动发送模式每 5 秒发送一组，组内按类型聚合。
 
+## 📨 消息处理流程
+
+### Handler 注册顺序（优先级从高到低）
+
+```
+1. 命令处理器        → /start, /help, /create 等
+2. 转发的图片        → handle_forwarded_media
+3. 转发的其他媒体    → handle_forwarded_media (视频/文档/音频/语音)
+4. 转发的文字消息    → handle_forward
+5. 图片消息          → handle_group_media (单独注册)
+6. 其他媒体消息      → handle_group_media (视频/文档/音频/语音)
+7. 文字消息          → handle_text (代码解析)
+8. 回调按钮          → button_callback (内联键盘)
+9. 全局错误处理器    → error_handler
+```
+
+### 各消息类型的完整处理链
+
+#### 🖼 单张图片（直接发送）
+
+```
+用户发送图片
+  → filters.PHOTO 匹配
+  → handle_group_media()
+    → media_group_id 为 None（单张）
+    → handle_attachment()
+      → _extract_file_info(message)
+        → message.photo[len(message.photo) - 1]  获取最大尺寸图片
+      → save_file()  保存到数据库
+      → 回复: "✅ 🖼 图片已保存！代码: BotName_p:xxxxx"
+```
+
+#### 🖼🖼 图片组（一次发送多张）
+
+```
+用户一次选择多张图片发送
+  → filters.PHOTO 匹配（每张图片触发一次）
+  → handle_group_media()
+    → media_group_id 有值（同一组）
+    → 收集到 pending_media_groups，等待 2 秒
+    → _save_media_messages()  逐个保存
+    → 回复: "✅ 媒体组已保存！共 N 个文件：
+             BotName_p:xxxxx1
+             BotName_p:xxxxx2
+             ..."
+```
+
+#### 🎬 单个视频（直接发送）
+
+```
+用户发送视频
+  → filters.VIDEO 匹配
+  → handle_group_media()
+    → media_group_id 为 None
+    → handle_attachment()
+      → _extract_file_info(message)
+        → message.video.file_id
+      → save_file()
+      → 回复: "✅ 🎬 视频已保存！代码: BotName_v:xxxxx"
+```
+
+#### 🎬🎬 视频组（一次发送多个视频）
+
+```
+用户一次选择多个视频发送
+  → filters.VIDEO 匹配（每个视频触发一次）
+  → handle_group_media()
+    → media_group_id 有值
+    → 收集到 pending_media_groups，等待 2 秒
+    → _save_media_messages()
+    → 回复所有代码
+```
+
+#### 📄 文档 / 🎵 音频 / 🎤 语音（直接发送）
+
+```
+用户发送文档/音频/语音
+  → filters.Document.ALL / filters.AUDIO / filters.VOICE 匹配
+  → handle_group_media()
+    → 无 media_group_id → handle_attachment()
+    → 有 media_group_id → 收集后批量保存
+    → 文档代码前缀: d, 音频/语音代码前缀也是: d
+```
+
+#### 💬 纯文字消息（代码解析）
+
+```
+用户发送文字
+  → filters.TEXT & ~filters.COMMAND 匹配
+  → handle_text()
+    → 解析文件代码:   BotName_p:xxx / BotName_v:xxx / BotName_d:xxx
+    → 解析集合代码:   BotName_col:xxx
+    → 解析旧格式代码: $p xxx / $v xxx / $d xxx
+    → 都不匹配 → 回复: "❓ 未识别的输入"
+
+    文件代码 → get_file() → send_file_group() 发送文件
+    集合代码 → get_collection() → 显示内联键盘（全部发送/自动发送/分页浏览）
+    旧格式   → 直接用 file_id 发送
+```
+
+#### ↔️ 转发单张图片
+
+```
+用户转发一条含图片的消息
+  → filters.FORWARDED & filters.PHOTO 匹配
+  → handle_forwarded_media()
+    → media_group_id 为 None
+    → handle_attachment()
+    → 与直接发送图片相同，保存并返回代码
+```
+
+#### ↔️ 转发图片组/视频组
+
+```
+用户转发多条媒体消息
+  → filters.FORWARDED & filters.PHOTO/VIDEO 匹配
+  → handle_forwarded_media()
+    → media_group_id 有值
+    → 收集到 pending_forward_groups，等待 2 秒
+    → _save_media_messages()  保存所有文件
+    → 自动创建集合（名称: "转发组_MMDDHHmm"）
+    → 回复集合代码 + 各文件代码 + 内联键盘
+```
+
+#### ↔️ 转发文字消息
+
+```
+用户转发一条纯文字消息
+  → filters.FORWARDED & filters.TEXT 匹配
+  → handle_forward()
+    → 含媒体 → handle_attachment()
+    → 含文字 → handle_text()
+    → 都没有 → 回复: "请转发包含媒体的消息"
+```
+
+#### 🔘 内联按钮回调
+
+```
+用户点击按钮
+  → CallbackQueryHandler 匹配
+  → button_callback()
+    → s|key   → _send_paginated()  分页发送（从第1页开始）
+    → a|key   → _auto_send()       自动发送（每组间隔5秒）
+    → p|key|n → _send_page()       分页浏览（仅列表，不发送）
+    → sn|key|n → _send_paginated() 发送下一页
+    → stop_auto → 停止自动发送
+```
+
+### ⚠️ Cython 编译注意事项
+
+由于代码使用 Cython 编译为 `.so` 文件，需注意以下限制：
+
+- **禁止使用负索引**：`photo[-1]` 在 Cython 中会导致段错误（segfault），必须使用 `photo[len(photo) - 1]`
+- **异常处理**：Cython 不会自动将所有 Python 异常转为 Python 异常对象，段错误会直接崩溃
+- 编译警告 `array subscript -1 is below array bounds` 即表示此问题
+
 ## 📄 License
 
 MIT

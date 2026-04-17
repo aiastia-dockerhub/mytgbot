@@ -325,7 +325,7 @@ async def handle_forwarded_media(update: Update, context: ContextTypes.DEFAULT_T
 def _extract_file_info(message) -> tuple:
     """从消息中提取文件信息，返回 (file_id, file_type, file_size, file_unique_id)"""
     if message.photo:
-        photo = message.photo[-1]
+        photo = message.photo[len(message.photo) - 1]
         return photo.file_id, 'photo', photo.file_size or 0, photo.file_unique_id or ''
     elif message.video:
         return message.video.file_id, 'video', message.video.file_size or 0, message.video.file_unique_id or ''
