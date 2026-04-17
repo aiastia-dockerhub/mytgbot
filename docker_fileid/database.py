@@ -77,6 +77,16 @@ def save_file(user_id: int, file_type: str, file_id: str,
 
     conn = get_db()
     try:
+        # 去重：如果同一 bot 下已存在相同 file_unique_id，直接返回已有代码
+        if file_unique_id:
+            existing = conn.execute(
+                "SELECT code FROM file_mappings WHERE file_unique_id = ? AND bot_username = ?",
+                (file_unique_id, bot_username)
+            ).fetchone()
+            if existing:
+                logger.info("文件已存在，复用代码: %s (file_unique_id=%s)", existing['code'], file_unique_id)
+                return existing['code']
+
         # 生成唯一代码
         chars = string.ascii_letters + string.digits
         while True:
