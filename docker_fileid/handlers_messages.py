@@ -181,6 +181,10 @@ async def handle_group_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not message:
         return
 
+    logger.info("handle_group_media 触发: photo=%s, video=%s, document=%s, audio=%s, voice=%s, media_group_id=%s",
+                bool(message.photo), bool(message.video), bool(message.document),
+                bool(message.audio), bool(message.voice), message.media_group_id)
+
     media_group_id = message.media_group_id
     if not media_group_id:
         await handle_attachment(update, context)

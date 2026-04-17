@@ -101,9 +101,15 @@ def main():
     application.add_handler(CommandHandler("stats", stats_command))
     application.add_handler(CommandHandler("export", export_command))
 
-    # 转发的媒体消息（优先级最高）
+    # 转发的图片消息（单独注册）
     application.add_handler(MessageHandler(
-        filters.FORWARDED & (filters.PHOTO | filters.VIDEO | filters.Document.ALL | filters.AUDIO | filters.VOICE),
+        filters.FORWARDED & filters.PHOTO,
+        handle_forwarded_media
+    ))
+
+    # 转发的其他媒体消息
+    application.add_handler(MessageHandler(
+        filters.FORWARDED & (filters.VIDEO | filters.Document.ALL | filters.AUDIO | filters.VOICE),
         handle_forwarded_media
     ))
 
@@ -113,9 +119,15 @@ def main():
         handle_forward
     ))
 
-    # 媒体组处理（非转发的媒体）
+    # 图片处理（单独注册，避免组合过滤器匹配问题）
     application.add_handler(MessageHandler(
-        filters.PHOTO | filters.VIDEO | filters.Document.ALL | filters.AUDIO | filters.VOICE,
+        filters.PHOTO,
+        handle_group_media
+    ))
+
+    # 其他媒体处理（视频、文档、音频、语音）
+    application.add_handler(MessageHandler(
+        filters.VIDEO | filters.Document.ALL | filters.AUDIO | filters.VOICE,
         handle_group_media
     ))
 
