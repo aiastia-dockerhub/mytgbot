@@ -108,9 +108,7 @@ def main():
     # 启动
     logger.info("JavBus Bot 已启动，开始轮询消息...")
     application.run_polling(
-        drop_pending_updates=False,
-        poll_interval=1.0,
-        timeout=5,
+        drop_pending_updates=True,
         allowed_updates=["message", "callback_query"],
     )
 

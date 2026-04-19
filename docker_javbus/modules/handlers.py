@@ -366,15 +366,11 @@ async def jav_search_command(update: Update, context: ContextTypes):
 
 async def button_callback(update: Update, context: ContextTypes):
     """处理内联按钮回调"""
-    logger.info("button_callback 被调用")
     query = update.callback_query
-    try:
-        await query.answer()
-    except Exception as e:
-        logger.error("query.answer() 失败: %s", e)
+    await query.answer()
 
     data = query.data
-    logger.info("button_callback: data=%s, chat_id=%s, user=%s", data, update.effective_chat.id, update.effective_user.id)
+    logger.info("button_callback: data=%s", data)
 
     try:
         # 取消按钮
