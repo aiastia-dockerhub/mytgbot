@@ -5,8 +5,7 @@ JavBus 磁力搜索 Telegram Bot
 import asyncio
 import logging
 import sys
-from telegram import Update
-from telegram.ext import Application, ApplicationBuilder, CommandHandler, CallbackQueryHandler, TypeHandler
+from telegram.ext import Application, ApplicationBuilder, CommandHandler, CallbackQueryHandler
 
 # 配置日志
 logging.basicConfig(
@@ -70,17 +69,6 @@ def main():
         .build()
     )
 
-    # ==================== 全局更新日志（诊断用）====================
-    async def log_all_updates(update: Update, context):
-        if update.callback_query:
-            logger.info("收到 callback_query: data=%s, chat_id=%s", 
-                       update.callback_query.data, 
-                       update.callback_query.message.chat_id if update.callback_query.message else None)
-        elif update.message and update.message.text:
-            logger.info("收到 message: %s", update.message.text[:50])
-
-    application.add_handler(TypeHandler(Update, log_all_updates), group=-1)
-
     # ==================== 注册命令 ====================
 
     # 帮助
@@ -117,9 +105,15 @@ def main():
 
     application.add_error_handler(error_handler)
 
-    # 启动（缩短轮询间隔以便更快诊断）
+    # 启动
     logger.info("JavBus Bot 已启动，开始轮询消息...")
-    application.run_polling(drop_pending_updates=False, poll_interval=1.0, timeout=5)
+    logger.info("allowed_updates: %s", application._get_allowed_updates())
+    application.run_polling(
+        drop_pending_updates=False,
+        poll_interval=1.0,
+        timeout=5,
+        allowed_updates=["message", "callback_query"],
+    )
 
 
 if __name__ == '__main__':
