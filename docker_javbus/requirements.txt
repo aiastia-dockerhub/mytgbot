@@ -1,2 +1,2 @@
-python-telegram-bot[ext]==20.7
+python-telegram-bot[ext]==22.7
 aiohttp==3.9.3
