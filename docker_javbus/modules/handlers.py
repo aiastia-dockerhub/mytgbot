@@ -21,15 +21,109 @@ from modules.info_handlers import movie_command, star_command, codes_command  # 
 
 logger = logging.getLogger(__name__)
 
-# 每个 chat_id 对应的取消事件
-_cancel_events: dict[int, asyncio.Event] = {}
-
 # 每个 chat_id 对应的待收集磁力的影片 ID 列表（搜索/筛选后暂存）
 _pending_magnets: dict[int, list[str]] = {}
 
 # 搜索结果消息追踪: message_id → (movie_ids, file_prefix)
 # 用于回复消息触发收集
 _search_result_messages: dict[int, tuple[list[str], str]] = {}
+
+
+# ==================== 任务队列 ====================
+
+class _TaskQueue:
+    """每个 chat_id 一个 FIFO 队列，收集任务串行执行，bot 保持响应"""
+
+    def __init__(self):
+        self._queues: dict[int, asyncio.Queue] = {}
+        self._workers: dict[int, asyncio.Task] = {}
+        self._cancel_events: dict[int, asyncio.Event] = {}
+        # 当前正在执行的任务描述
+        self._current_task: dict[int, str] = {}
+
+    def get_cancel_event(self, chat_id: int) -> asyncio.Event:
+        if chat_id not in self._cancel_events:
+            self._cancel_events[chat_id] = asyncio.Event()
+        return self._cancel_events[chat_id]
+
+    def queue_size(self, chat_id: int) -> int:
+        q = self._queues.get(chat_id)
+        return q.qsize() if q else 0
+
+    def current_task_desc(self, chat_id: int) -> str | None:
+        return self._current_task.get(chat_id)
+
+    def is_running(self, chat_id: int) -> bool:
+        return chat_id in self._current_task
+
+    async def submit(self, chat_id: int, bot, coro_factory, description: str):
+        """提交任务到队列。coro_factory 是 async def (...) -> None 的工厂函数"""
+        if chat_id not in self._queues:
+            self._queues[chat_id] = asyncio.Queue()
+
+        # 放入队列: (coro_factory, description)
+        await self._queues[chat_id].put((coro_factory, description))
+
+        # 如果没有 worker 在运行，启动一个
+        if chat_id not in self._workers or self._workers[chat_id].done():
+            self._workers[chat_id] = asyncio.create_task(self._worker(chat_id, bot))
+
+    async def _worker(self, chat_id: int, bot):
+        """串行执行队列中的任务"""
+        q = self._queues[chat_id]
+        try:
+            while not q.empty():
+                coro_factory, description = await q.get()
+                cancel_event = self.get_cancel_event(chat_id)
+                cancel_event.clear()
+                self._current_task[chat_id] = description
+
+                try:
+                    await coro_factory()
+                except Exception as e:
+                    logger.error("任务执行异常 [%s]: %s", description, e, exc_info=True)
+                    try:
+                        await bot.send_message(chat_id=chat_id, text=f"❌ 任务执行出错: {e}")
+                    except Exception:
+                        pass
+                finally:
+                    self._current_task.pop(chat_id, None)
+                    q.task_done()
+        finally:
+            # worker 结束时清理
+            self._workers.pop(chat_id, None)
+
+    def cancel_current(self, chat_id: int) -> bool:
+        """取消当前正在执行的任务"""
+        event = self._cancel_events.get(chat_id)
+        if event and not event.is_set() and chat_id in self._current_task:
+            event.set()
+            return True
+        return False
+
+    def clear_queue(self, chat_id: int) -> int:
+        """清空等待中的任务，返回清空数量"""
+        q = self._queues.get(chat_id)
+        if not q:
+            return 0
+        count = q.qsize()
+        while not q.empty():
+            try:
+                q.get_nowait()
+                q.task_done()
+            except asyncio.QueueEmpty:
+                break
+        return count
+
+
+# 全局任务队列实例
+task_queue = _TaskQueue()
+# 兼容旧代码
+_cancel_events = task_queue._cancel_events
+
+
+def _get_cancel_event(chat_id: int) -> asyncio.Event:
+    return task_queue.get_cancel_event(chat_id)
 
 
 def admin_only(func):
@@ -41,13 +135,6 @@ def admin_only(func):
             return
         return await func(update, context, *args, **kwargs)
     return wrapper
-
-
-def _get_cancel_event(chat_id: int) -> asyncio.Event:
-    """获取或创建取消事件"""
-    if chat_id not in _cancel_events:
-        _cancel_events[chat_id] = asyncio.Event()
-    return _cancel_events[chat_id]
 
 
 @admin_only
@@ -83,14 +170,19 @@ async def help_command(update: Update, context: ContextTypes):
 
 @admin_only
 async def stop_command(update: Update, context: ContextTypes):
-    """停止当前批量任务"""
+    """停止当前批量任务并清空队列"""
     chat_id = update.effective_chat.id
-    event = _cancel_events.get(chat_id)
-    if event and not event.is_set():
-        event.set()
-        await update.message.reply_text("⏹ 已发送停止信号，正在中止...")
-    else:
+    stopped = task_queue.cancel_current(chat_id)
+    cleared = task_queue.clear_queue(chat_id)
+    parts = []
+    if stopped:
+        parts.append("⏹ 已发送停止信号，正在中止当前任务...")
+    if cleared:
+        parts.append(f"🗑 已取消 {cleared} 个排队中的任务")
+    if not parts:
         await update.message.reply_text("ℹ️ 当前没有正在运行的任务")
+    else:
+        await update.message.reply_text("\n".join(parts))
 
 
 @admin_only
@@ -166,8 +258,6 @@ async def jav_star_command(update: Update, context: ContextTypes):
 
     star_id = context.args[0]
     chat_id = update.effective_chat.id
-    cancel_event = _get_cancel_event(chat_id)
-    cancel_event.clear()
 
     status_msg = await update.message.reply_text(
         f"🔍 正在获取演员 <code>{html_escape(star_id)}</code> 的影片列表...",
@@ -182,34 +272,58 @@ async def jav_star_command(update: Update, context: ContextTypes):
         )
         return
 
+    total = len(movie_ids)
+    desc = f"jav_star {star_id} ({total}部)"
+    queued = task_queue.queue_size(chat_id)
     await status_msg.edit_text(
-        f"📋 找到 <b>{len(movie_ids)}</b> 部影片，正在逐个收集磁力链接...\n"
-        f"磁力链接收集: <b>0/{len(movie_ids)}</b>",
+        f"📋 找到 <b>{total}</b> 部影片"
+        + (f"，排队中（前面还有 {queued + 1} 个任务）..." if task_queue.is_running(chat_id) else "，正在收集磁力链接..."),
         parse_mode="HTML"
     )
 
-    async def _progress(done, total):
+    async def _do_collect():
+        cancel_event = _get_cancel_event(chat_id)
         await status_msg.edit_text(
-            f"📋 共 {total} 部影片，正在逐个收集磁力链接...\n"
-            f"磁力链接收集: <b>{done}/{total}</b>",
+            f"📋 共 {total} 部影片，正在逐个收集磁力链接...\n磁力链接收集: <b>0/{total}</b>",
             parse_mode="HTML"
         )
 
-    results = await get_magnets_for_movie_list(
-        movie_ids, progress_callback=_progress, cancel_event=cancel_event
-    )
+        async def _progress(done, total):
+            if cancel_event.is_set():
+                return
+            try:
+                await status_msg.edit_text(
+                    f"📋 共 {total} 部影片，正在逐个收集磁力链接...\n磁力链接收集: <b>{done}/{total}</b>",
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
 
-    if cancel_event.is_set():
-        await update.message.reply_text("⏹ 任务已停止")
-        return
+        results = await get_magnets_for_movie_list(
+            movie_ids, progress_callback=_progress, cancel_event=cancel_event
+        )
+        if cancel_event.is_set():
+            await context.bot.send_message(chat_id=chat_id, text="⏹ 任务已停止")
+            return
+        if not results:
+            await context.bot.send_message(chat_id=chat_id, text="❌ 未能获取到磁力链接")
+            return
+        lines = [r['link'] for r in results if r.get('link')]
+        content = "\n".join(lines)
+        await _send_magnet_file_by_chat(
+            context, update=None, chat_id=chat_id,
+            content=content, filename=f"star_{star_id}.txt",
+            count=len(results), reply_to=None
+        )
+        try:
+            await status_msg.edit_text(
+                f"✅ 磁力链接收集完成！共 <b>{len(results)}</b> 个（总计 {total} 部影片）",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
 
-    if not results:
-        await update.message.reply_text("❌ 未能获取到磁力链接")
-        return
-
-    lines = [r['link'] for r in results if r.get('link')]
-    content = "\n".join(lines)
-    await _send_magnet_file(update, context, content, f"star_{star_id}.txt", len(results))
+    await task_queue.submit(chat_id, context.bot, _do_collect, desc)
 
 
 # ==================== 工具函数 ====================
@@ -401,60 +515,72 @@ async def reply_search_handler(update: Update, context: ContextTypes):
     chat_id = update.effective_chat.id
     _pending_magnets.pop(chat_id, None)
 
-    cancel_event = _get_cancel_event(chat_id)
-    cancel_event.clear()
-
     total = len(movie_ids)
-    status_msg = await update.message.reply_text(
-        f"📋 共 <b>{total}</b> 部影片，正在逐个收集磁力链接...\n"
-        f"磁力链接收集: <b>0/{total}</b>",
-        parse_mode="HTML"
-    )
+    desc = f"reply:{file_prefix} ({total}部)"
+    queued = task_queue.queue_size(chat_id)
+    if task_queue.is_running(chat_id):
+        await update.message.reply_text(
+            f"📋 {total} 部影片已加入队列（前面还有 {queued + 1} 个任务），请等待..."
+        )
+    else:
+        await update.message.reply_text(
+            f"📋 共 <b>{total}</b> 部影片，正在准备收集磁力链接...",
+            parse_mode="HTML"
+        )
 
-    async def _progress(done, total):
-        if cancel_event.is_set():
+    async def _do_collect():
+        cancel_event = _get_cancel_event(chat_id)
+        status_msg = await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"📋 共 {total} 部影片，正在逐个收集磁力链接...\n磁力链接收集: <b>0/{total}</b>",
+            parse_mode="HTML"
+        )
+
+        async def _progress(done, total):
+            if cancel_event.is_set():
+                return
+            try:
+                await status_msg.edit_text(
+                    f"📋 共 {total} 部影片，正在逐个收集磁力链接...\n磁力链接收集: <b>{done}/{total}</b>",
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+
+        try:
+            results = await get_magnets_for_movie_list(
+                movie_ids, progress_callback=_progress, cancel_event=cancel_event
+            )
+        except Exception as e:
+            logger.error("回复触发收集异常: %s", e, exc_info=True)
+            await context.bot.send_message(chat_id=chat_id, text=f"❌ 收集磁力链接时出错: {e}")
             return
+
+        if cancel_event.is_set():
+            await context.bot.send_message(chat_id=chat_id, text="⏹ 任务已停止")
+            return
+
+        if not results:
+            await context.bot.send_message(chat_id=chat_id, text="❌ 未能获取到磁力链接")
+            return
+
+        lines = [r['link'] for r in results if r.get('link')]
+        content = "\n".join(lines)
+        await _send_magnet_file_by_chat(
+            context, update=None, chat_id=chat_id,
+            content=content, filename=f"{file_prefix}.txt",
+            count=len(results), reply_to=None
+        )
+
         try:
             await status_msg.edit_text(
-                f"📋 共 {total} 部影片，正在逐个收集磁力链接...\n"
-                f"磁力链接收集: <b>{done}/{total}</b>",
+                f"✅ 磁力链接收集完成！共 <b>{len(results)}</b> 个（总计 {total} 部影片）",
                 parse_mode="HTML"
             )
         except Exception:
             pass
 
-    try:
-        results = await get_magnets_for_movie_list(
-            movie_ids, progress_callback=_progress, cancel_event=cancel_event
-        )
-    except Exception as e:
-        logger.error("回复触发收集异常: %s", e, exc_info=True)
-        await update.message.reply_text(f"❌ 收集磁力链接时出错: {e}")
-        return
-
-    if cancel_event.is_set():
-        await update.message.reply_text("⏹ 任务已停止")
-        return
-
-    if not results:
-        await update.message.reply_text("❌ 未能获取到磁力链接")
-        return
-
-    lines = [r['link'] for r in results if r.get('link')]
-    content = "\n".join(lines)
-    await _send_magnet_file_by_chat(
-        context, update=None, chat_id=chat_id,
-        content=content, filename=f"{file_prefix}.txt",
-        count=len(results), reply_to=None
-    )
-
-    try:
-        await status_msg.edit_text(
-            f"✅ 磁力链接收集完成！共 <b>{len(results)}</b> 个（总计 {total} 部影片）",
-            parse_mode="HTML"
-        )
-    except Exception:
-        pass
+    await task_queue.submit(chat_id, context.bot, _do_collect, desc)
 
 
 async def _send_txt_and_track(context, chat_id, content, filename, caption, file_prefix):
@@ -532,16 +658,24 @@ async def button_callback(update: Update, context: ContextTypes):
                     await query.message.reply_text("❌ 未找到影片，请重新使用 /jav_filter 或 /jav_search 搜索")
                     return
 
-            cancel_event = _get_cancel_event(chat_id)
-            cancel_event.clear()
-
             if action == "filter":
                 filter_type, filter_value = param.split(":", 1)
                 file_prefix = f"{filter_type}_{filter_value}"
             else:
                 file_prefix = f"search_{param}"
 
-            await _collect_magnets_with_ids(query, context, movie_ids, cancel_event, file_prefix)
+            total = len(movie_ids)
+            desc = f"{action}:{param} ({total}部)"
+            queued = task_queue.queue_size(chat_id)
+            if task_queue.is_running(chat_id):
+                await query.message.reply_text(
+                    f"📋 {total} 部影片已加入队列（前面还有 {queued + 1} 个任务），请等待..."
+                )
+
+            async def _do_collect():
+                await _collect_magnets_with_ids(query, context, movie_ids, file_prefix, chat_id)
+
+            await task_queue.submit(chat_id, context.bot, _do_collect, desc)
             return
 
     except Exception as e:
@@ -552,8 +686,9 @@ async def button_callback(update: Update, context: ContextTypes):
             pass
 
 
-async def _collect_magnets_with_ids(query, context, movie_ids, cancel_event, file_prefix):
-    """使用已有的影片 ID 列表直接收集磁力链接"""
+async def _collect_magnets_with_ids(query, context, movie_ids, file_prefix, chat_id):
+    """使用已有的影片 ID 列表直接收集磁力链接（由任务队列调用）"""
+    cancel_event = _get_cancel_event(chat_id)
     total = len(movie_ids)
     status_msg = await query.message.reply_text(
         f"📋 共 <b>{total}</b> 部影片，正在逐个收集磁力链接...\n"
@@ -579,26 +714,25 @@ async def _collect_magnets_with_ids(query, context, movie_ids, cancel_event, fil
         )
     except Exception as e:
         logger.error("收集磁力链接异常: %s", e, exc_info=True)
-        await query.message.reply_text(f"❌ 收集磁力链接时出错: {e}")
+        await context.bot.send_message(chat_id=chat_id, text=f"❌ 收集磁力链接时出错: {e}")
         return
 
     if cancel_event.is_set():
-        await query.message.reply_text("⏹ 任务已停止")
+        await context.bot.send_message(chat_id=chat_id, text="⏹ 任务已停止")
         return
 
     if not results:
-        await query.message.reply_text("❌ 未能获取到磁力链接")
+        await context.bot.send_message(chat_id=chat_id, text="❌ 未能获取到磁力链接")
         return
 
     lines = [r['link'] for r in results if r.get('link')]
     content = "\n".join(lines)
     await _send_magnet_file_by_chat(
-        context, update=None, chat_id=query.message.chat_id,
+        context, update=None, chat_id=chat_id,
         content=content, filename=f"{file_prefix}.txt",
         count=len(results), reply_to=None
     )
 
-    # 更新状态消息为已完成
     try:
         await status_msg.edit_text(
             f"✅ 磁力链接收集完成！共 <b>{len(results)}</b> 个（总计 {total} 部影片）",
