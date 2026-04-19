@@ -217,16 +217,20 @@ async def get_magnets_for_movie_list(movie_ids, progress_callback=None, cancel_e
     total = len(movie_ids)
     results = []
     completed_count = 0
+    last_progress_time = 0  # 上次更新进度的时间戳
 
     async def _fetch_with_progress(session, movie_id):
-        nonlocal completed_count
+        nonlocal completed_count, last_progress_time
         if cancel_event and cancel_event.is_set():
             return None
         result = await _fetch_magnet_for_movie(session, movie_id, semaphore)
         completed_count += 1
         if cancel_event and cancel_event.is_set():
             return None
-        if progress_callback and completed_count % max(1, total // 10) == 0:
+        # 每5个或每3秒更新一次进度，避免 Telegram API 频率限制
+        now = time.monotonic()
+        if progress_callback and (completed_count % 5 == 0 or completed_count == total or now - last_progress_time >= 3.0):
+            last_progress_time = now
             try:
                 await progress_callback(completed_count, total)
             except Exception:
