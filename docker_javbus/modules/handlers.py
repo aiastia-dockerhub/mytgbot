@@ -7,7 +7,7 @@ import logging
 import aiohttp
 from html import escape as html_escape
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ContextTypes
+from telegram.ext import ContextTypes, MessageHandler, filters
 from functools import wraps
 from config import ADMIN_IDS, JAVBUS_API_URL
 from modules.javbus_api import (
@@ -26,6 +26,10 @@ _cancel_events: dict[int, asyncio.Event] = {}
 
 # 每个 chat_id 对应的待收集磁力的影片 ID 列表（搜索/筛选后暂存）
 _pending_magnets: dict[int, list[str]] = {}
+
+# 搜索结果消息追踪: message_id → (movie_ids, file_prefix)
+# 用于回复消息触发收集
+_search_result_messages: dict[int, tuple[list[str], str]] = {}
 
 
 def admin_only(func):
@@ -311,6 +315,15 @@ async def jav_filter_command(update: Update, context: ContextTypes):
 
     await status_msg.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
 
+    # 超过 10 个影片时，额外发送影片ID列表 TXT
+    if len(movie_ids) > 10:
+        file_prefix = f"{filter_type}_{filter_value}"
+        id_content = "\n".join(movie_ids)
+        _send_txt_async(context, update.effective_chat.id, id_content, f"{file_prefix}_影片列表.txt", f"📋 共 {len(movie_ids)} 个影片ID")
+
+    # 记录搜索结果消息，用于回复触发
+    _search_result_messages[status_msg.message_id] = (movie_ids, f"{filter_type}_{filter_value}")
+
 
 # ==================== jav_search: 先展示再确认 ====================
 
@@ -360,6 +373,109 @@ async def jav_search_command(update: Update, context: ContextTypes):
     ])
 
     await status_msg.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+
+    # 超过 10 个影片时，额外发送影片ID列表 TXT
+    if len(movie_ids) > 10:
+        file_prefix = f"search_{keyword}"
+        id_content = "\n".join(movie_ids)
+        _send_txt_async(context, update.effective_chat.id, id_content, f"{file_prefix}_影片列表.txt", f"📋 共 {len(movie_ids)} 个影片ID")
+
+    # 记录搜索结果消息，用于回复触发
+    _search_result_messages[status_msg.message_id] = (movie_ids, f"search_{keyword}")
+
+
+# ==================== 回复搜索结果触发收集 ====================
+
+@admin_only
+async def reply_search_handler(update: Update, context: ContextTypes):
+    """用户回复搜索结果消息时，自动触发磁力链接收集"""
+    if not update.message or not update.message.reply_to_message:
+        return
+
+    replied_msg_id = update.message.reply_to_message.message_id
+    if replied_msg_id not in _search_result_messages:
+        return
+
+    movie_ids, file_prefix = _search_result_messages.pop(replied_msg_id)
+    # 同时清理暂存
+    chat_id = update.effective_chat.id
+    _pending_magnets.pop(chat_id, None)
+
+    cancel_event = _get_cancel_event(chat_id)
+    cancel_event.clear()
+
+    total = len(movie_ids)
+    status_msg = await update.message.reply_text(
+        f"📋 共 <b>{total}</b> 部影片，正在逐个收集磁力链接...\n"
+        f"磁力链接收集: <b>0/{total}</b>",
+        parse_mode="HTML"
+    )
+
+    async def _progress(done, total):
+        if cancel_event.is_set():
+            return
+        try:
+            await status_msg.edit_text(
+                f"📋 共 {total} 部影片，正在逐个收集磁力链接...\n"
+                f"磁力链接收集: <b>{done}/{total}</b>",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+
+    try:
+        results = await get_magnets_for_movie_list(
+            movie_ids, progress_callback=_progress, cancel_event=cancel_event
+        )
+    except Exception as e:
+        logger.error("回复触发收集异常: %s", e, exc_info=True)
+        await update.message.reply_text(f"❌ 收集磁力链接时出错: {e}")
+        return
+
+    if cancel_event.is_set():
+        await update.message.reply_text("⏹ 任务已停止")
+        return
+
+    if not results:
+        await update.message.reply_text("❌ 未能获取到磁力链接")
+        return
+
+    lines = [r['link'] for r in results if r.get('link')]
+    content = "\n".join(lines)
+    await _send_magnet_file_by_chat(
+        context, update=None, chat_id=chat_id,
+        content=content, filename=f"{file_prefix}.txt",
+        count=len(results), reply_to=None
+    )
+
+    try:
+        await status_msg.edit_text(
+            f"✅ 磁力链接收集完成！共 <b>{len(results)}</b> 个（总计 {total} 部影片）",
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+
+
+def _send_txt_async(context, chat_id, content, filename, caption):
+    """异步发送 TXT 文件"""
+    import asyncio
+
+    async def _do_send():
+        bytes_io = io.BytesIO(content.encode("utf-8"))
+        bytes_io.seek(0)
+        try:
+            await context.bot.send_document(
+                chat_id=chat_id,
+                document=bytes_io,
+                filename=filename,
+                caption=caption,
+            )
+            bytes_io.close()
+        except Exception as e:
+            logger.error("发送TXT文件失败: %s", e)
+
+    asyncio.ensure_future(_do_send())
 
 
 # ==================== 按钮回调处理 ====================

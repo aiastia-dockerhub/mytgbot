@@ -5,7 +5,7 @@ JavBus 磁力搜索 Telegram Bot
 import asyncio
 import logging
 import sys
-from telegram.ext import Application, ApplicationBuilder, CommandHandler, CallbackQueryHandler
+from telegram.ext import Application, ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
 # 配置日志
 logging.basicConfig(
@@ -29,6 +29,7 @@ from modules.handlers import (
     codes_command,
     stop_command,
     button_callback,
+    reply_search_handler,
 )
 
 
@@ -91,6 +92,9 @@ def main():
     application.add_handler(CommandHandler("movie", movie_command))
     application.add_handler(CommandHandler("star", star_command))
     application.add_handler(CommandHandler("codes", codes_command))
+
+    # 回复搜索结果消息触发磁力收集
+    application.add_handler(MessageHandler(filters.REPLY & ~filters.COMMAND, reply_search_handler))
 
     # 全局错误处理
     async def error_handler(update: object, context) -> None:
