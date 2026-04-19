@@ -92,6 +92,19 @@ def main():
     application.add_handler(CommandHandler("star", star_command))
     application.add_handler(CommandHandler("codes", codes_command))
 
+    # 全局错误处理
+    async def error_handler(update: object, context: ContextTypes) -> None:
+        """全局错误处理器，记录所有未捕获的异常"""
+        logger.error("全局异常 (update=%s): %s", update, context.error, exc_info=context.error)
+        # 尝试通知用户
+        if update and hasattr(update, 'effective_message') and update.effective_message:
+            try:
+                await update.effective_message.reply_text(f"❌ Bot 内部错误，请联系管理员")
+            except Exception:
+                pass
+
+    application.add_error_handler(error_handler)
+
     # 启动
     logger.info("JavBus Bot 已启动，开始轮询消息...")
     application.run_polling(drop_pending_updates=True)

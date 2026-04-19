@@ -370,40 +370,71 @@ async def button_callback(update: Update, context: ContextTypes):
     await query.answer()
 
     data = query.data
+    logger.info("button_callback: data=%s, chat_id=%s, user=%s", data, update.effective_chat.id, update.effective_user.id)
 
-    # 取消按钮
-    if data == "cancel":
-        await query.edit_message_reply_markup(reply_markup=None)
-        await query.edit_message_text(query.message.text + "\n\n❌ 已取消")
-        return
-
-    # 收集磁力链接
-    if data.startswith("magnet:"):
-        parts = data.split(":", 2)
-        action = parts[1]  # filter / search
-        param = parts[2]   # type:value / keyword
-
-        # 移除旧按钮
-        await query.edit_message_reply_markup(reply_markup=None)
-
-        chat_id = update.effective_chat.id
-
-        # 从暂存中取出之前搜索到的影片 ID
-        movie_ids = _pending_magnets.pop(chat_id, None)
-        if not movie_ids:
-            await query.message.reply_text("❌ 暂存的影片列表已过期，请重新使用 /jav_filter 或 /jav_search 搜索")
+    try:
+        # 取消按钮
+        if data == "cancel":
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+            await query.edit_message_text(query.message.text + "\n\n❌ 已取消")
             return
 
-        logger.info("button_callback: chat_id=%s, 取出 %d 个影片ID, action=%s", chat_id, len(movie_ids), action)
+        # 收集磁力链接
+        if data.startswith("magnet:"):
+            parts = data.split(":", 2)
+            if len(parts) < 3:
+                await query.message.reply_text("❌ 回调数据格式错误")
+                return
 
-        cancel_event = _get_cancel_event(chat_id)
-        cancel_event.clear()
+            action = parts[1]  # filter / search
+            param = parts[2]   # type:value / keyword
 
-        if action == "filter":
-            filter_type, filter_value = param.split(":", 1)
-            await _collect_magnets_with_ids(query, context, movie_ids, cancel_event, f"{filter_type}_{filter_value}")
-        elif action == "search":
-            await _collect_magnets_with_ids(query, context, movie_ids, cancel_event, f"search_{param}")
+            # 移除旧按钮
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+
+            chat_id = update.effective_chat.id
+
+            # 从暂存中取出之前搜索到的影片 ID
+            movie_ids = _pending_magnets.pop(chat_id, None)
+            logger.info("button_callback: chat_id=%s, 暂存中有 %d 个影片ID", chat_id, len(movie_ids) if movie_ids else 0)
+
+            if not movie_ids:
+                # 暂存数据不存在（bot 重启等），回退到重新搜索
+                logger.warning("button_callback: 暂存为空，回退重新搜索 action=%s param=%s", action, param)
+                if action == "filter":
+                    filter_type, filter_value = param.split(":", 1)
+                    movie_ids = await get_all_movie_ids_by_filter(filter_type, filter_value)
+                elif action == "search":
+                    movie_ids = await search_all_movie_ids(param)
+
+                if not movie_ids:
+                    await query.message.reply_text("❌ 未找到影片，请重新使用 /jav_filter 或 /jav_search 搜索")
+                    return
+
+            cancel_event = _get_cancel_event(chat_id)
+            cancel_event.clear()
+
+            if action == "filter":
+                filter_type, filter_value = param.split(":", 1)
+                file_prefix = f"{filter_type}_{filter_value}"
+            else:
+                file_prefix = f"search_{param}"
+
+            await _collect_magnets_with_ids(query, context, movie_ids, cancel_event, file_prefix)
+            return
+
+    except Exception as e:
+        logger.error("button_callback 异常: %s", e, exc_info=True)
+        try:
+            await query.message.reply_text(f"❌ 处理按钮回调时出错: {e}")
+        except Exception:
+            pass
 
 
 async def _collect_magnets_with_ids(query, context, movie_ids, cancel_event, file_prefix):
@@ -432,7 +463,7 @@ async def _collect_magnets_with_ids(query, context, movie_ids, cancel_event, fil
             movie_ids, progress_callback=_progress, cancel_event=cancel_event
         )
     except Exception as e:
-        logger.error("收集磁力链接异常: %s", e)
+        logger.error("收集磁力链接异常: %s", e, exc_info=True)
         await query.message.reply_text(f"❌ 收集磁力链接时出错: {e}")
         return
 
