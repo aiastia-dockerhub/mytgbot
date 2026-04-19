@@ -315,11 +315,11 @@ async def jav_filter_command(update: Update, context: ContextTypes):
 
     await status_msg.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
 
-    # 超过 10 个影片时，额外发送影片ID列表 TXT
+    # 超过 10 个影片时，额外发送影片ID列表 TXT（可回复触发收集）
     if len(movie_ids) > 10:
         file_prefix = f"{filter_type}_{filter_value}"
         id_content = "\n".join(movie_ids)
-        _send_txt_async(context, update.effective_chat.id, id_content, f"{file_prefix}_影片列表.txt", f"📋 共 {len(movie_ids)} 个影片ID")
+        await _send_txt_and_track(context, update.effective_chat.id, id_content, f"{file_prefix}_影片列表.txt", f"📋 共 {len(movie_ids)} 个影片ID，回复此文件可触发收集", file_prefix)
 
     # 记录搜索结果消息，用于回复触发
     _search_result_messages[status_msg.message_id] = (movie_ids, f"{filter_type}_{filter_value}")
@@ -374,11 +374,11 @@ async def jav_search_command(update: Update, context: ContextTypes):
 
     await status_msg.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
 
-    # 超过 10 个影片时，额外发送影片ID列表 TXT
+    # 超过 10 个影片时，额外发送影片ID列表 TXT（可回复触发收集）
     if len(movie_ids) > 10:
         file_prefix = f"search_{keyword}"
         id_content = "\n".join(movie_ids)
-        _send_txt_async(context, update.effective_chat.id, id_content, f"{file_prefix}_影片列表.txt", f"📋 共 {len(movie_ids)} 个影片ID")
+        await _send_txt_and_track(context, update.effective_chat.id, id_content, f"{file_prefix}_影片列表.txt", f"📋 共 {len(movie_ids)} 个影片ID，回复此文件可触发收集", file_prefix)
 
     # 记录搜索结果消息，用于回复触发
     _search_result_messages[status_msg.message_id] = (movie_ids, f"search_{keyword}")
@@ -457,25 +457,24 @@ async def reply_search_handler(update: Update, context: ContextTypes):
         pass
 
 
-def _send_txt_async(context, chat_id, content, filename, caption):
-    """异步发送 TXT 文件"""
-    import asyncio
-
-    async def _do_send():
-        bytes_io = io.BytesIO(content.encode("utf-8"))
-        bytes_io.seek(0)
-        try:
-            await context.bot.send_document(
-                chat_id=chat_id,
-                document=bytes_io,
-                filename=filename,
-                caption=caption,
-            )
-            bytes_io.close()
-        except Exception as e:
-            logger.error("发送TXT文件失败: %s", e)
-
-    asyncio.ensure_future(_do_send())
+async def _send_txt_and_track(context, chat_id, content, filename, caption, file_prefix):
+    """发送 TXT 文件并追踪消息 ID，用于回复触发收集"""
+    bytes_io = io.BytesIO(content.encode("utf-8"))
+    bytes_io.seek(0)
+    try:
+        msg = await context.bot.send_document(
+            chat_id=chat_id,
+            document=bytes_io,
+            filename=filename,
+            caption=caption,
+        )
+        bytes_io.close()
+        # 从文件名解析影片 ID 列表
+        movie_ids = content.strip().split("\n")
+        _search_result_messages[msg.message_id] = (movie_ids, file_prefix)
+        logger.info("TXT文件已发送并追踪: msg_id=%s, %d个影片", msg.message_id, len(movie_ids))
+    except Exception as e:
+        logger.error("发送TXT文件失败: %s", e)
 
 
 # ==================== 按钮回调处理 ====================
