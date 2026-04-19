@@ -24,6 +24,9 @@ logger = logging.getLogger(__name__)
 # 每个 chat_id 对应的取消事件
 _cancel_events: dict[int, asyncio.Event] = {}
 
+# 每个 chat_id 对应的待收集磁力的影片 ID 列表（搜索/筛选后暂存）
+_pending_magnets: dict[int, list[str]] = {}
+
 
 def admin_only(func):
     """管理员权限装饰器（ADMIN_IDS 为空时所有人可用）"""
@@ -243,6 +246,10 @@ async def _send_magnet_file_by_chat(context, update, chat_id, content, filename,
         bytes_io.close()
     except Exception as e:
         logger.error("发送文件失败: %s", e)
+        try:
+            await context.bot.send_message(chat_id=chat_id, text=f"❌ 发送磁力链接文件失败: {e}")
+        except Exception:
+            pass
 
 
 # ==================== jav_filter: 先展示再确认 ====================
@@ -280,6 +287,11 @@ async def jav_filter_command(update: Update, context: ContextTypes):
     if not movie_ids:
         await update.message.reply_text("❌ 未找到符合条件的影片")
         return
+
+    # 暂存搜索结果，点击按钮时直接使用，无需重新搜索
+    chat_id = update.effective_chat.id
+    _pending_magnets[chat_id] = movie_ids
+    logger.info("jav_filter: chat_id=%s, 暂存 %d 个影片ID", chat_id, len(movie_ids))
 
     # 展示影片列表 + 确认按钮
     movie_list = ", ".join(f"<code>{html_escape(mid)}</code>" for mid in movie_ids[:50])
@@ -326,6 +338,11 @@ async def jav_search_command(update: Update, context: ContextTypes):
         )
         return
 
+    # 暂存搜索结果，点击按钮时直接使用，无需重新搜索
+    chat_id = update.effective_chat.id
+    _pending_magnets[chat_id] = movie_ids
+    logger.info("jav_search: chat_id=%s, 暂存 %d 个影片ID", chat_id, len(movie_ids))
+
     # 展示影片列表 + 确认按钮
     movie_list = ", ".join(f"<code>{html_escape(mid)}</code>" for mid in movie_ids[:50])
     text = (
@@ -369,46 +386,55 @@ async def button_callback(update: Update, context: ContextTypes):
         # 移除旧按钮
         await query.edit_message_reply_markup(reply_markup=None)
 
-        cancel_event = _get_cancel_event(update.effective_chat.id)
+        chat_id = update.effective_chat.id
+
+        # 从暂存中取出之前搜索到的影片 ID
+        movie_ids = _pending_magnets.pop(chat_id, None)
+        if not movie_ids:
+            await query.message.reply_text("❌ 暂存的影片列表已过期，请重新使用 /jav_filter 或 /jav_search 搜索")
+            return
+
+        logger.info("button_callback: chat_id=%s, 取出 %d 个影片ID, action=%s", chat_id, len(movie_ids), action)
+
+        cancel_event = _get_cancel_event(chat_id)
         cancel_event.clear()
 
         if action == "filter":
             filter_type, filter_value = param.split(":", 1)
-            await _collect_magnets_from_filter(query, context, filter_type, filter_value, cancel_event)
+            await _collect_magnets_with_ids(query, context, movie_ids, cancel_event, f"{filter_type}_{filter_value}")
         elif action == "search":
-            await _collect_magnets_from_search(query, context, param, cancel_event)
+            await _collect_magnets_with_ids(query, context, movie_ids, cancel_event, f"search_{param}")
 
 
-async def _collect_magnets_from_filter(query, context, filter_type, filter_value, cancel_event):
-    """从筛选结果收集磁力链接"""
+async def _collect_magnets_with_ids(query, context, movie_ids, cancel_event, file_prefix):
+    """使用已有的影片 ID 列表直接收集磁力链接"""
+    total = len(movie_ids)
     status_msg = await query.message.reply_text(
-        f"🔍 正在重新获取影片列表...",
-        parse_mode="HTML"
-    )
-
-    movie_ids = await get_all_movie_ids_by_filter(filter_type, filter_value)
-    if not movie_ids:
-        await status_msg.edit_text("❌ 未找到影片")
-        return
-
-    await status_msg.edit_text(
-        f"📋 共 <b>{len(movie_ids)}</b> 部影片，正在逐个收集磁力链接...\n"
-        f"磁力链接收集: <b>0/{len(movie_ids)}</b>",
+        f"📋 共 <b>{total}</b> 部影片，正在逐个收集磁力链接...\n"
+        f"磁力链接收集: <b>0/{total}</b>",
         parse_mode="HTML"
     )
 
     async def _progress(done, total):
         if cancel_event.is_set():
             return
-        await status_msg.edit_text(
-            f"📋 共 {total} 部影片，正在逐个收集磁力链接...\n"
-            f"磁力链接收集: <b>{done}/{total}</b>",
-            parse_mode="HTML"
-        )
+        try:
+            await status_msg.edit_text(
+                f"📋 共 {total} 部影片，正在逐个收集磁力链接...\n"
+                f"磁力链接收集: <b>{done}/{total}</b>",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
 
-    results = await get_magnets_for_movie_list(
-        movie_ids, progress_callback=_progress, cancel_event=cancel_event
-    )
+    try:
+        results = await get_magnets_for_movie_list(
+            movie_ids, progress_callback=_progress, cancel_event=cancel_event
+        )
+    except Exception as e:
+        logger.error("收集磁力链接异常: %s", e)
+        await query.message.reply_text(f"❌ 收集磁力链接时出错: {e}")
+        return
 
     if cancel_event.is_set():
         await query.message.reply_text("⏹ 任务已停止")
@@ -422,54 +448,15 @@ async def _collect_magnets_from_filter(query, context, filter_type, filter_value
     content = "\n".join(lines)
     await _send_magnet_file_by_chat(
         context, update=None, chat_id=query.message.chat_id,
-        content=content, filename=f"{filter_type}_{filter_value}.txt",
+        content=content, filename=f"{file_prefix}.txt",
         count=len(results), reply_to=None
     )
 
-
-async def _collect_magnets_from_search(query, context, keyword, cancel_event):
-    """从搜索结果收集磁力链接"""
-    status_msg = await query.message.reply_text(
-        "🔍 正在重新搜索影片列表...",
-        parse_mode="HTML"
-    )
-
-    movie_ids = await search_all_movie_ids(keyword)
-    if not movie_ids:
-        await status_msg.edit_text("❌ 未找到影片")
-        return
-
-    await status_msg.edit_text(
-        f"📋 共 <b>{len(movie_ids)}</b> 部影片，正在逐个收集磁力链接...\n"
-        f"磁力链接收集: <b>0/{len(movie_ids)}</b>",
-        parse_mode="HTML"
-    )
-
-    async def _progress(done, total):
-        if cancel_event.is_set():
-            return
+    # 更新状态消息为已完成
+    try:
         await status_msg.edit_text(
-            f"📋 共 {total} 部影片，正在逐个收集磁力链接...\n"
-            f"磁力链接收集: <b>{done}/{total}</b>",
+            f"✅ 磁力链接收集完成！共 <b>{len(results)}</b> 个（总计 {total} 部影片）",
             parse_mode="HTML"
         )
-
-    results = await get_magnets_for_movie_list(
-        movie_ids, progress_callback=_progress, cancel_event=cancel_event
-    )
-
-    if cancel_event.is_set():
-        await query.message.reply_text("⏹ 任务已停止")
-        return
-
-    if not results:
-        await query.message.reply_text("❌ 未能获取到磁力链接")
-        return
-
-    lines = [r['link'] for r in results if r.get('link')]
-    content = "\n".join(lines)
-    await _send_magnet_file_by_chat(
-        context, update=None, chat_id=query.message.chat_id,
-        content=content, filename=f"search_{keyword}.txt",
-        count=len(results), reply_to=None
-    )
+    except Exception:
+        pass
