@@ -5,7 +5,8 @@ JavBus 磁力搜索 Telegram Bot
 import asyncio
 import logging
 import sys
-from telegram.ext import Application, ApplicationBuilder, CommandHandler, CallbackQueryHandler
+from telegram import Update
+from telegram.ext import Application, ApplicationBuilder, CommandHandler, CallbackQueryHandler, TypeHandler
 
 # 配置日志
 logging.basicConfig(
@@ -68,6 +69,17 @@ def main():
         .post_init(post_init)
         .build()
     )
+
+    # ==================== 全局更新日志（诊断用）====================
+    async def log_all_updates(update: Update, context):
+        if update.callback_query:
+            logger.info("收到 callback_query: data=%s, chat_id=%s", 
+                       update.callback_query.data, 
+                       update.callback_query.message.chat_id if update.callback_query.message else None)
+        elif update.message and update.message.text:
+            logger.info("收到 message: %s", update.message.text[:50])
+
+    application.add_handler(TypeHandler(Update, log_all_updates), group=-1)
 
     # ==================== 注册命令 ====================
 
