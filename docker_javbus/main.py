@@ -117,9 +117,9 @@ def main():
 
     application.add_error_handler(error_handler)
 
-    # 启动
+    # 启动（缩短轮询间隔以便更快诊断）
     logger.info("JavBus Bot 已启动，开始轮询消息...")
-    application.run_polling(drop_pending_updates=True)
+    application.run_polling(drop_pending_updates=False, poll_interval=1.0, timeout=5)
 
 
 if __name__ == '__main__':
