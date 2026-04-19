@@ -93,7 +93,7 @@ def main():
     application.add_handler(CommandHandler("codes", codes_command))
 
     # 全局错误处理
-    async def error_handler(update: object, context: ContextTypes) -> None:
+    async def error_handler(update: object, context) -> None:
         """全局错误处理器，记录所有未捕获的异常"""
         logger.error("全局异常 (update=%s): %s", update, context.error, exc_info=context.error)
         # 尝试通知用户
