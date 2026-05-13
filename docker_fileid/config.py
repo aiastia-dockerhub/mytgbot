@@ -19,6 +19,9 @@ CODE_PREFIX = os.environ.get('CODE_PREFIX', '')  # 自定义代码前缀，默�
 MAX_COLLECTION_FILES = 999
 AUTO_SEND_INTERVAL = 5  # 秒
 GROUP_SEND_SIZE = 10  # 每组最多10个
+SEND_DELAY = 1  # 每次发送间的延迟（秒），防止触发 Flood Control
+FLOOD_RETRY_MARGIN = 2  # Flood Control 等待额外缓冲时间（秒）
+FLOOD_MAX_RETRIES = 3  # Flood Control 最大重试次数
 CODE_LENGTH = 32  # 随机码长度
 DB_PATH = './data/fileid.db'
 
