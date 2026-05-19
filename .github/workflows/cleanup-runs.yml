@@ -30,8 +30,8 @@ on:
           - 'true'
           - 'false'
 
-  schedule:
-    - cron: '0 3 * * *'
+#  schedule:
+#    - cron: '0 3 * * *'
 
 jobs:
   # 清理 Workflow 运行记录
